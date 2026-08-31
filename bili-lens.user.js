@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/bilidanmu/BiliLens
-    // @version      4.1.0
+    // @version      4.2.0
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -10,7 +10,7 @@
     // @grant        GM_setClipboard
     // @grant        GM_getValue
     // @grant        GM_setValue
-    // @run-at       document-start
+    // @run-at       document-end
     // @license      MIT
     // ==/UserScript==
 
@@ -985,34 +985,27 @@
                 </div>
             `;
 
-            const insert = () => {
-                document.body.appendChild(panelContainer);
-                bindUIEvents();
-                STATE.uiCreated = true;
-                updateUI();
+            // document-end 时 body 必然已就绪，直接插入
+            document.body.appendChild(panelContainer);
+            bindUIEvents();
+            STATE.uiCreated = true;
+            updateUI();
 
-                // 入口按钮植入 B 站工具栏（工具栏可能延迟出现，轮询等待）
-                const dotPoll = setInterval(() => {
-                    if (STATE.dotInserted) {
-                        clearInterval(dotPoll);
-                        STATE.activePolls.delete(dotPoll);
-                        return;
-                    }
-                    insertDotIntoToolbar();
-                }, 1000);
-                STATE.activePolls.add(dotPoll);
-                // 30 秒后放弃
-                setTimeout(() => {
+            // 入口按钮植入 B 站工具栏（工具栏可能延迟出现，轮询等待）
+            const dotPoll = setInterval(() => {
+                if (STATE.dotInserted) {
                     clearInterval(dotPoll);
                     STATE.activePolls.delete(dotPoll);
-                }, 30000);
-            };
-
-            if (document.body) {
-                insert();
-            } else {
-                document.addEventListener('DOMContentLoaded', insert);
-            }
+                    return;
+                }
+                insertDotIntoToolbar();
+            }, 1000);
+            STATE.activePolls.add(dotPoll);
+            // 30 秒后放弃
+            setTimeout(() => {
+                clearInterval(dotPoll);
+                STATE.activePolls.delete(dotPoll);
+            }, 30000);
         }
 
         // 将入口按钮插入 B 站原生工具栏
@@ -1228,10 +1221,6 @@
         // ============================================================
 
         createUI();
-
-        document.addEventListener('DOMContentLoaded', () => {
-            createUI();
-        });
 
         // ============================================================
         // SPA 路由监听 — B 站切视频时自动重置状态、重新植入按钮
