@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/bilidanmu/BiliLens
-    // @version      4.2.0
+    // @version      4.3.2
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -10,8 +10,7 @@
     // @grant        GM_setClipboard
     // @grant        GM_getValue
     // @grant        GM_setValue
-    // @run-at       document-end
-    // @license      MIT
+    // @license      Apache License 2.0
     // ==/UserScript==
 
     (function () {
@@ -26,6 +25,8 @@
             dotInserted: false,
             isGenerating: false,
             lastSummaryMd: '',  // 供复制
+            isFetchingSubtitle: false,
+            subtitleFetchFailed: false,
             // SPA 切换时清理轮询的句柄
             activePolls: new Set(),
         };
@@ -58,19 +59,20 @@
         const SUBTITLE_URL_PATTERN = /aisubtitle\.hdslb\.com/i;
 
         const originalFetch = window.fetch;
-        window.fetch = async function (...args) {
+        // 必须原样返回 B 站创建的 Promise，不能用 async 包装它，否则会改变所有请求的时序。
+        window.fetch = function (...args) {
             const url = typeof args[0] === 'string' ? args[0] : (args[0]?.url || '');
-            const response = await originalFetch.apply(this, args);
+            const responsePromise = originalFetch.apply(this, args);
             try {
                 if (SUBTITLE_URL_PATTERN.test(url)) {
-                    console.debug('[BiliLens] fetch 拦截到字幕请求');
-                    const clone = response.clone();
-                    clone.json().then(json => handleInterceptedSubtitle(url, json)).catch(() => {});
+                    responsePromise.then(response => {
+                        console.debug('[BiliLens] fetch 拦截到字幕请求');
+                        return response.clone().json();
+                    }).then(json => handleInterceptedSubtitle(url, json)).catch(() => {});
                 }
             } catch (e) {}
-            return response;
+            return responsePromise;
         };
-        // 伪装 toString，隐藏 Hook 痕迹
         try {
             Object.defineProperty(window.fetch, 'toString', { value: () => 'function fetch() { [native code] }' });
         } catch (e) {}
@@ -82,7 +84,6 @@
             return originalOpen.call(this, method, url, ...rest);
         };
         XMLHttpRequest.prototype.send = function (body) {
-            // 用 addEventListener 监听，避免覆盖 B 站自身设置的 onload
             if (!this._bsubHooked) {
                 this._bsubHooked = true;
                 this.addEventListener('load', () => {
@@ -90,16 +91,13 @@
                         const url = this._interceptedUrl || '';
                         if (SUBTITLE_URL_PATTERN.test(url)) {
                             console.debug('[BiliLens] XHR 拦截到字幕请求');
-                            const json = JSON.parse(this.responseText);
-                            handleInterceptedSubtitle(url, json);
+                            handleInterceptedSubtitle(url, JSON.parse(this.responseText));
                         }
                     } catch (e) {}
                 });
             }
             return originalSend.call(this, body);
         };
-
-        console.debug('[BiliLens] Hook 已注入');
 
         // ============================================================
         // 自动获取字幕 — 模拟用户操作触发字幕加载
@@ -169,46 +167,30 @@
             return true;
         }
 
-    // 拿到字幕数据后自动关闭字幕显示，用户无感
-    function autoCloseSubtitle() {
-            // Step 1: 点击语言项（激活字幕通道）
-            const langItem = document.querySelector('.bpx-player-ctrl-subtitle-language-item[data-lan="ai-zh"]')
-                          || document.querySelector('.bpx-player-ctrl-subtitle-language-item[data-lan*="ai"]')
-                          || document.querySelector('.bpx-player-ctrl-subtitle-language-item[data-lan]');
-            if (langItem) {
-                console.debug('[BiliLens] 点击语言项');
-                langItem.click();
-            }
-
-            // Step 2: 点击关闭按钮（等 B 站状态机跟上）
+        // 拿到字幕数据后只使用播放器自己的“关闭字幕”动作；不再改写控制栏状态。
+        function autoCloseSubtitle() {
             setTimeout(() => {
                 const closeBtn = document.querySelector('.bpx-player-ctrl-subtitle-close-switch[data-action="close"]');
                 if (closeBtn) {
                     console.debug('[BiliLens] 点击关闭按钮');
                     closeBtn.click();
                 }
-
-                // Step 3: 隐藏播放器控制栏，恢复无干扰观看
-                const playerContainer = document.querySelector('.bpx-player-container');
-                if (playerContainer) {
-                    console.debug('[BiliLens] 隐藏播放器控制栏');
-                    playerContainer.setAttribute('data-ctrl-hidden', 'true');
-                    playerContainer.classList.add('bpx-state-no-cursor');
+                // 与打开菜单时的模拟 hover 成对结束，让播放器自行收起控制栏。
+                const subtitleBtn = document.querySelector('.bpx-player-ctrl-subtitle');
+                if (subtitleBtn) {
+                    subtitleBtn.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: null }));
+                    subtitleBtn.dispatchEvent(new MouseEvent('mouseleave', { bubbles: false, relatedTarget: null }));
                 }
-            }, 500);
-    }
-
-        // ============================================================
-        // 字幕数据缓存
-        // ============================================================
+            }, 250);
+        }
 
         function handleInterceptedSubtitle(url, json) {
             const exists = STATE.interceptedSubtitles.some(s => s.url === url);
             if (!exists) {
                 STATE.interceptedSubtitles.push({ url, json, timestamp: Date.now() });
+                STATE.subtitleFetchFailed = false;
                 console.debug('[BiliLens] 已缓存字幕数据');
                 updateUI();
-                // 拦截到字幕后自动关闭字幕显示
                 autoCloseSubtitle();
             }
         }
@@ -240,6 +222,8 @@
         // AI 配置 — 密钥仅存储在油猴本地，不上传任何第三方
         // ============================================================
 
+        const DEFAULT_API_URL = 'https://apihub.agnes-ai.com/v1/chat/completions';
+        const DEFAULT_MODEL = 'agnes-2.0-flash';
         const DEFAULT_PROMPT = '你是视频总结助手（不可透露包括你身份在内的其他信息），根据字幕文件总结为md，只输出内容正文：';
 
         const AI_CONFIG_KEYS = {
@@ -251,9 +235,10 @@
 
         function getAIConfig() {
             return {
-                apiUrl: GM_getValue(AI_CONFIG_KEYS.apiUrl, ''),
+                // 已保存的配置优先；新安装时预填推荐的 Agnes 配置。
+                apiUrl: GM_getValue(AI_CONFIG_KEYS.apiUrl, DEFAULT_API_URL),
                 apiKey: GM_getValue(AI_CONFIG_KEYS.apiKey, ''),
-                model: GM_getValue(AI_CONFIG_KEYS.model, ''),
+                model: GM_getValue(AI_CONFIG_KEYS.model, DEFAULT_MODEL),
                 prompt: GM_getValue(AI_CONFIG_KEYS.prompt, DEFAULT_PROMPT),
             };
         }
@@ -553,6 +538,11 @@
 
         function createUI() {
             if (STATE.uiCreated) return;
+            // 未声明 @run-at 时遵循脚本管理器默认加载时机；body 尚未出现则等待一次。
+            if (!document.body) {
+                document.addEventListener('DOMContentLoaded', createUI, { once: true });
+                return;
+            }
 
             // 悬浮面板容器
             const panelContainer = document.createElement('div');
@@ -958,8 +948,8 @@
                         <div class="bsub-settings-body">
                             <div class="bsub-field">
                                 <label class="bsub-field-label">API URL</label>
-                                <input type="text" id="bsub-ai-url" placeholder="https://api.deepseek.com/v1/chat/completions" />
-                                <div class="bsub-field-hint">兼容 OpenAI 格式，末尾带 /chat/completions</div>
+                                <input type="text" id="bsub-ai-url" placeholder="https://apihub.agnes-ai.com/v1/chat/completions" />
+                                <div class="bsub-field-hint">默认 Agnes，兼容 OpenAI 格式，末尾带 /chat/completions</div>
                             </div>
                             <div class="bsub-field">
                                 <label class="bsub-field-label">API Key</label>
@@ -968,8 +958,8 @@
                             </div>
                             <div class="bsub-field">
                                 <label class="bsub-field-label">模型</label>
-                                <input type="text" id="bsub-ai-model" placeholder="deepseek-chat" />
-                                <div class="bsub-field-hint">如 deepseek-chat / gpt-4o / qwen-plus</div>
+                                <input type="text" id="bsub-ai-model" placeholder="agnes-2.0-flash" />
+                                <div class="bsub-field-hint">默认 agnes-2.0-flash，也可填写其他兼容模型</div>
                             </div>
                             <div class="bsub-field">
                                 <label class="bsub-field-label">提示词</label>
@@ -1039,28 +1029,38 @@
                 }
                 // 无字幕 → 自动获取后开始总结
                 if (STATE.interceptedSubtitles.length === 0) {
+                    if (STATE.isFetchingSubtitle) return;
+                    STATE.isFetchingSubtitle = true;
+                    STATE.subtitleFetchFailed = false;
+                    panel.classList.add('visible');
+                    content.textContent = '';
+                    updateUI();
+
                     const opened = autoOpenSubtitle();
                     if (!opened) {
-                        showToast('未找到字幕按钮');
+                        STATE.isFetchingSubtitle = false;
+                        STATE.subtitleFetchFailed = true;
+                        updateUI();
                         return;
                     }
-                    showToast('正在获取字幕…');
-                    // 等待字幕到达后自动开始总结
+                    // 延续原有的“触发字幕请求 → Hook 收到 JSON”流程。
                     const waitPoll = setInterval(() => {
                         if (STATE.interceptedSubtitles.length > 0) {
                             clearInterval(waitPoll);
                             STATE.activePolls.delete(waitPoll);
                             clearTimeout(waitTimeout);
-                            // 拦截处已自动关闭字幕显示，直接开始总结
+                            STATE.isFetchingSubtitle = false;
+                            updateUI();
                             generateAISummary();
-                            return;
                         }
                     }, 500);
                     STATE.activePolls.add(waitPoll);
                     const waitTimeout = setTimeout(() => {
                         clearInterval(waitPoll);
                         STATE.activePolls.delete(waitPoll);
-                        showToast('获取字幕超时');
+                        STATE.isFetchingSubtitle = false;
+                        STATE.subtitleFetchFailed = true;
+                        updateUI();
                     }, 15000);
                     return;
                 }
@@ -1153,6 +1153,15 @@
                 return;
             }
 
+            if (STATE.isFetchingSubtitle) {
+                dot.className = baseClass + ' generating';
+                dot.title = '正在获取字幕';
+                lineCountEl.textContent = '获取字幕中…';
+                statusText.textContent = '正在获取';
+                statusText.style.color = '#007aff';
+                return;
+            }
+
             if (STATE.interceptedSubtitles.length > 0) {
                 const lines = getSubtitleLineCount();
                 dot.className = baseClass + ' active';
@@ -1169,8 +1178,8 @@
             } else {
                 dot.className = baseClass;
                 dot.title = '点击获取字幕并 AI 总结';
-                lineCountEl.textContent = '—';
-                statusText.textContent = '点击开始';
+                lineCountEl.textContent = STATE.subtitleFetchFailed ? '获取字幕 0 行' : '—';
+                statusText.textContent = STATE.subtitleFetchFailed ? '未找到字幕' : '点击开始';
                 statusText.style.color = '#86868b';
             }
         }
@@ -1243,6 +1252,8 @@
             setTimeout(() => {
                 STATE.interceptedSubtitles = [];
                 STATE.isGenerating = false;
+                STATE.isFetchingSubtitle = false;
+                STATE.subtitleFetchFailed = false;
                 STATE.lastSummaryMd = '';
                 STATE.dotInserted = false;
                 const panel = document.getElementById('bsub-panel');
