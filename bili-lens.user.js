@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/bilidanmu/BiliLens
-    // @version      4.9.0
+    // @version      4.10.0
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -37,6 +37,12 @@
 
         const SUBTITLE_URL_PATTERN = /aisubtitle\.hdslb\.com/i;
         let subtitleRequestHooksInstalled = false;
+        const SUBTITLE_PREFERENCES = {
+            'ai-zh': 'AI 中文字幕优先',
+            ai: '任意 AI 字幕优先',
+            original: '原始字幕优先',
+            any: '任意可用字幕',
+        };
 
         // 仅在用户主动获取字幕时安装，避免影响播放页初始资源请求。
         function installSubtitleRequestHooks() {
@@ -101,23 +107,24 @@
             subtitleBtn.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
             subtitleBtn.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
 
-            // Step 2: 优先 AI 中文字幕，没有则回退到任意可用字幕
-            // B 站 AI 字幕语言项：data-lan="ai-zh"
-            const findAndClickLangItem = () => {
-                // 优先 AI 中文字幕
-                let langItem = document.querySelector('.bpx-player-ctrl-subtitle-language-item[data-lan="ai-zh"]');
-                // 回退：其他 AI 字幕
-                if (!langItem) {
-                    langItem = document.querySelector('.bpx-player-ctrl-subtitle-language-item[data-lan*="ai"]');
+            // Step 2: 按本地偏好选择字幕；没有命中时始终回退到任意可用字幕。
+            const findSubtitleLanguageItem = () => {
+                const items = [...document.querySelectorAll('.bpx-player-ctrl-subtitle-language-item[data-lan]')];
+                if (!items.length) return null;
+
+                const preference = getAIConfig().subtitlePreference;
+                const isAI = item => item.dataset.lan?.includes('ai');
+                if (preference === 'ai-zh') {
+                    return items.find(item => item.dataset.lan === 'ai-zh')
+                        || items.find(isAI)
+                        || items[0];
                 }
-                // 回退：任意可用字幕
-                if (!langItem) {
-                    langItem = document.querySelector('.bpx-player-ctrl-subtitle-language-item[data-lan]');
-                }
-                return langItem;
+                if (preference === 'ai') return items.find(isAI) || items[0];
+                if (preference === 'original') return items.find(item => !isAI(item)) || items[0];
+                return items[0];
             };
 
-            let langItem = findAndClickLangItem();
+            let langItem = findSubtitleLanguageItem();
 
             if (langItem) {
                 // 面板已展开，直接选择
@@ -134,7 +141,7 @@
             let attempts = 0;
             const panelPoll = setInterval(() => {
                 attempts++;
-                langItem = findAndClickLangItem();
+                langItem = findSubtitleLanguageItem();
                 if (langItem) {
                     clearInterval(panelPoll);
                     STATE.activePolls.delete(panelPoll);
@@ -268,6 +275,7 @@
             apiKey: 'ai_api_key',
             model: 'ai_model',
             prompt: 'ai_prompt',
+            subtitlePreference: 'subtitle_preference',
         };
         const SUMMARY_HISTORY_KEY = 'summary_history_v1';
         const SUMMARY_HISTORY_LIMIT = 20;
@@ -280,6 +288,7 @@
                 apiKey: GM_getValue(AI_CONFIG_KEYS.apiKey, ''),
                 model: GM_getValue(AI_CONFIG_KEYS.model, DEFAULT_MODEL),
                 prompt: GM_getValue(AI_CONFIG_KEYS.prompt, DEFAULT_PROMPT),
+                subtitlePreference: GM_getValue(AI_CONFIG_KEYS.subtitlePreference, 'ai-zh'),
             };
         }
 
@@ -288,6 +297,7 @@
             GM_setValue(AI_CONFIG_KEYS.apiKey, config.apiKey);
             GM_setValue(AI_CONFIG_KEYS.model, config.model);
             GM_setValue(AI_CONFIG_KEYS.prompt, config.prompt);
+            GM_setValue(AI_CONFIG_KEYS.subtitlePreference, config.subtitlePreference);
         }
 
         function isAIConfigured() {
@@ -1176,6 +1186,16 @@
                                 <div class="bsub-field-hint">默认 agnes-2.0-flash，也可填写其他兼容模型</div>
                             </div>
                             <div class="bsub-field">
+                                <label class="bsub-field-label">字幕优先级</label>
+                                <select id="bsub-subtitle-preference">
+                                    <option value="ai-zh">AI 中文字幕优先</option>
+                                    <option value="ai">任意 AI 字幕优先</option>
+                                    <option value="original">原始字幕优先</option>
+                                    <option value="any">任意可用字幕</option>
+                                </select>
+                                <div class="bsub-field-hint">未找到首选语言时，将自动使用其他可用字幕</div>
+                            </div>
+                            <div class="bsub-field">
                                 <label class="bsub-field-label">提示词</label>
                                 <select id="bsub-prompt-template">
                                     <option value="general">通用总结</option>
@@ -1405,6 +1425,7 @@
             document.getElementById('bsub-ai-url').value = c.apiUrl;
             document.getElementById('bsub-ai-key').value = c.apiKey;
             document.getElementById('bsub-ai-model').value = c.model;
+            document.getElementById('bsub-subtitle-preference').value = SUBTITLE_PREFERENCES[c.subtitlePreference] ? c.subtitlePreference : 'ai-zh';
             document.getElementById('bsub-ai-prompt').value = c.prompt || DEFAULT_PROMPT;
             document.getElementById('bsub-prompt-template').value = getPromptTemplateId(c.prompt || DEFAULT_PROMPT);
             document.getElementById('bsub-settings-overlay').classList.add('visible');
@@ -1420,6 +1441,7 @@
                 apiKey: document.getElementById('bsub-ai-key').value.trim(),
                 model: document.getElementById('bsub-ai-model').value.trim(),
                 prompt: document.getElementById('bsub-ai-prompt').value.trim() || DEFAULT_PROMPT,
+                subtitlePreference: document.getElementById('bsub-subtitle-preference').value,
             });
             closeSettings();
             showToast('已保存');
