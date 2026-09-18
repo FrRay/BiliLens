@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/bilidanmu/BiliLens
-    // @version      4.7.0
+    // @version      4.8.0
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -998,6 +998,59 @@
                         color: white;
                     }
                     #bsub-settings-save:hover { background: #0066d6; }
+
+                    @media (prefers-color-scheme: dark) {
+                        #bsub-panel {
+                            background: rgba(30, 30, 32, 0.9);
+                            border-color: rgba(255, 255, 255, 0.12);
+                            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+                        }
+                        #bsub-bar {
+                            border-bottom-color: rgba(255, 255, 255, 0.1);
+                        }
+                        #bsub-content {
+                            color: #f5f5f7;
+                        }
+                        #bsub-content .bsub-md-quote {
+                            color: #aeaeb2;
+                        }
+                        #bsub-content .bsub-md-inline-code,
+                        #bsub-content .bsub-md-code {
+                            background: rgba(255, 255, 255, 0.1);
+                        }
+                        #bsub-copy-btn,
+                        #bsub-download-btn {
+                            background: rgba(255, 255, 255, 0.12);
+                            border-color: rgba(255, 255, 255, 0.14);
+                        }
+                        #bsub-settings-overlay {
+                            background: rgba(0, 0, 0, 0.52);
+                        }
+                        #bsub-settings-dialog {
+                            background: rgba(30, 30, 32, 0.96);
+                            border-color: rgba(255, 255, 255, 0.12);
+                            box-shadow: 0 16px 56px rgba(0, 0, 0, 0.45);
+                        }
+                        .bsub-settings-title,
+                        .bsub-field-label {
+                            color: #f5f5f7;
+                        }
+                        .bsub-settings-desc,
+                        .bsub-field-hint {
+                            color: #aeaeb2;
+                        }
+                        .bsub-field input,
+                        .bsub-field select,
+                        .bsub-field textarea {
+                            color: #f5f5f7;
+                            background: rgba(255, 255, 255, 0.1);
+                            border-color: rgba(255, 255, 255, 0.16);
+                        }
+                        #bsub-settings-cancel {
+                            background: rgba(255, 255, 255, 0.16);
+                            color: #64a8ff;
+                        }
+                    }
                 </style>
 
                 <!-- 入口按钮：借用 B 站原生 toolbar 类名，视觉无缝融合 -->

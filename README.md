@@ -8,7 +8,7 @@
     <a href="#常见问题">常见问题</a>
   </p>
 
-  <img alt="Version" src="https://img.shields.io/badge/version-4.7.0-00AEEC?style=flat-square">
+  <img alt="Version" src="https://img.shields.io/badge/version-4.8.0-00AEEC?style=flat-square">
   <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-7C3AED?style=flat-square">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Bilibili-FB7299?style=flat-square">
 
@@ -153,6 +153,7 @@ Agnes 提供免费的默认访问额度，单次视频总结通常对应一次�
 | 提示词模板 | 提供通用总结、要点提纲、学习笔记和行动清单模板。 |
 | 键盘快捷键 | 支持快速打开总结面板与收起面板。 |
 | 本地总结历史 | 按视频保存最近 20 条总结；再次打开时可直接查看已保存内容。 |
+| 深色模式 | 跟随系统深色偏好调整总结面板与设置窗口。 |
 | 自定义提示词 | 支持摘要、笔记、问答和行动清单等表达形式。 |
 | 页面切换适配 | 在 B 站站内切换视频后自动更新状态。 |
 | 配置保存 | API Key 与设置保存在脚本管理器的本地存储中。 |
@@ -186,7 +187,6 @@ Agnes 提供免费的默认访问额度，单次视频总结通常对应一次�
 ## 计划中
 
 - [ ] 时间戳章节导航：在总结中点击时间点跳转视频位置；
-- [ ] 深色模式；
 
 ## 开发与反馈
 
