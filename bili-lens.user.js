@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/bilidanmu/BiliLens
-    // @version      4.10.0
+    // @version      4.10.1
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -23,6 +23,8 @@
             interceptedSubtitles: [],
             uiCreated: false,
             dotInserted: false,
+            toolbarObserver: null,
+            toolbarObserverRoot: null,
             isGenerating: false,
             lastSummaryMd: '',  // 供复制
             isFetchingSubtitle: false,
@@ -1241,18 +1243,44 @@
             }, 30000);
         }
 
+        function isDotInToolbar() {
+            const toolbar = document.querySelector('.video-toolbar-right');
+            const dot = document.getElementById('bsub-dot');
+            return !!(toolbar && dot && toolbar.contains(dot));
+        }
+
+        // 工具栏可能在同一路由内被播放器替换，只观察播放器区域以避免监听页面其他位置的变动。
+        function observeToolbar(toolbar) {
+            const root = toolbar.closest('.bpx-player-container') || toolbar.parentElement;
+            if (!root || STATE.toolbarObserverRoot === root) return;
+
+            STATE.toolbarObserver?.disconnect();
+            STATE.toolbarObserver = new MutationObserver(() => {
+                if (isDotInToolbar()) return;
+                STATE.dotInserted = false;
+                insertDotIntoToolbar();
+            });
+            STATE.toolbarObserver.observe(root, { childList: true, subtree: true });
+            STATE.toolbarObserverRoot = root;
+        }
+
         // 将入口按钮插入 B 站原生工具栏
         function insertDotIntoToolbar() {
-            if (STATE.dotInserted) return;
             const toolbar = document.querySelector('.video-toolbar-right');
-            if (!toolbar) return;
+            if (!toolbar) return false;
 
             const dot = document.getElementById('bsub-dot');
-            if (!dot) return;
-            if (toolbar.contains(dot)) return;
+            if (!dot) return false;
+            if (toolbar.contains(dot)) {
+                STATE.dotInserted = true;
+                observeToolbar(toolbar);
+                return true;
+            }
 
             toolbar.insertBefore(dot, toolbar.firstChild);
             STATE.dotInserted = true;
+            observeToolbar(toolbar);
+            return true;
         }
 
         function bindUIEvents() {
@@ -1574,6 +1602,9 @@
                 clearInterval(id);
             }
             STATE.activePolls.clear();
+            STATE.toolbarObserver?.disconnect();
+            STATE.toolbarObserver = null;
+            STATE.toolbarObserverRoot = null;
 
             // 延迟等待新页面渲染
             setTimeout(() => {
