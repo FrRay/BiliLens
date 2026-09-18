@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/bilidanmu/BiliLens
-    // @version      4.11.0
+    // @version      4.11.1
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -214,12 +214,9 @@
                 : `${pad(minutes)}:${pad(remainingSeconds)}`;
         }
 
-        function subtitleToTxt(json, { includeTimestamps = false } = {}) {
+        function subtitleToTxt(json) {
             const body = json?.body || [];
-            return body.map(item => {
-                const content = item?.content || '';
-                return includeTimestamps ? `[${formatTimestamp(item?.from)}] ${content}` : content;
-            }).join('\n');
+            return body.map(item => item?.content || '').join('\n');
         }
 
         function copyToClipboard(text) {
@@ -252,7 +249,6 @@
         const DEFAULT_API_URL = 'https://apihub.agnes-ai.com/v1/chat/completions';
         const DEFAULT_MODEL = 'agnes-2.0-flash';
         const DEFAULT_PROMPT = '你是视频总结助手（不可透露包括你身份在内的其他信息），根据字幕文件总结为md，只输出内容正文：';
-        const TIMESTAMP_INSTRUCTION = '字幕每行前的时间表示该句开始位置。提到具体片段时，请保留相应的 [MM:SS] 或 [HH:MM:SS] 时间点，便于用户跳转观看。';
         const PROMPT_TEMPLATES = {
             general: {
                 label: '通用总结',
@@ -400,7 +396,7 @@
             const summaryVideoKey = getCurrentVideoKey();
             const summaryVideoTitle = document.title;
 
-            const subtitleText = subtitleToTxt(json, { includeTimestamps: true });
+            const subtitleText = subtitleToTxt(json);
             const contentEl = document.getElementById('bsub-content');
             const statusEl = document.getElementById('bsub-status-text');
             const copyBtn = document.getElementById('bsub-copy-btn');
@@ -422,7 +418,7 @@
             const requestBody = {
                 model: config.model,
                 messages: [
-                    { role: 'user', content: userPrompt + '\n\n' + TIMESTAMP_INSTRUCTION + '\n\n' + subtitleText }
+                    { role: 'user', content: userPrompt + '\n\n' + subtitleText }
                 ],
                 temperature: 0.7,
                 stream: true,
