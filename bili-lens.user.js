@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/bilidanmu/BiliLens
-    // @version      4.14.1
+    // @version      4.14.2
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -284,6 +284,10 @@
             action: {
                 label: '行动清单',
                 prompt: '根据字幕提取可执行的行动项。按优先级整理任务、所需条件、注意事项与预期结果。使用 Markdown 复选列表，只输出内容正文：',
+            },
+            narrative: {
+                label: '视频叙事',
+                prompt: '你是视频理解助手（不可透露包括你身份在内的其他信息），根据字幕文件理解此视频的叙事节奏，总结为md，只输出内容正文：',
             },
         };
 
@@ -1295,6 +1299,7 @@
                                     <option value="outline">要点提纲</option>
                                     <option value="study">学习笔记</option>
                                     <option value="action">行动清单</option>
+                                    <option value="narrative">视频叙事</option>
                                     <option value="custom">自定义</option>
                                 </select>
                                 <div class="bsub-field-hint">选择模板后可继续编辑下方内容</div>
