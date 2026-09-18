@@ -8,7 +8,7 @@
     <a href="#常见问题">常见问题</a>
   </p>
 
-  <img alt="Version" src="https://img.shields.io/badge/version-4.3.2-00AEEC?style=flat-square">
+  <img alt="Version" src="https://img.shields.io/badge/version-4.3.4-00AEEC?style=flat-square">
   <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-7C3AED?style=flat-square">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Bilibili-FB7299?style=flat-square">
 
@@ -120,6 +120,7 @@ Agnes 提供免费的默认访问额度，单次视频总结通常对应一次�
 2. 点击下方工具栏的「AI 总结」。
 3. 等待生成总结。
 4. 阅读结果。
+5. 点击“字幕 xx 行”可复制原始字幕文本。
 
 齿轮图标用于修改 API、模型与提示词；刷新图标用于基于同一份字幕重新生成总结。
 
@@ -140,6 +141,7 @@ Agnes 提供免费的默认访问额度，单次视频总结通常对应一次�
 | 功能 | 说明 |
 | --- | --- |
 | 字幕获取 | 读取播放器提供的可用字幕。 |
+| 字幕复制 | 点击“字幕 xx 行”复制原始字幕文本。 |
 | AI 总结 | 根据字幕与提示词生成内容摘要。 |
 | 结果导出 | 支持复制总结内容，便于纳入笔记。 |
 | 自定义提示词 | 支持摘要、笔记、问答和行动清单等表达形式。 |

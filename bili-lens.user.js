@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/bilidanmu/BiliLens
-    // @version      4.3.2
+    // @version      4.3.4
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -31,73 +31,59 @@
             activePolls: new Set(),
         };
 
-        // 节流
-        function throttle(fn, delay) {
-            let lastCall = 0;
-            let timer = null;
-            return function (...args) {
-                const now = Date.now();
-                const remaining = delay - (now - lastCall);
-                if (remaining <= 0) {
-                    if (timer) { clearTimeout(timer); timer = null; }
-                    lastCall = now;
-                    fn.apply(this, args);
-                } else if (!timer) {
-                    timer = setTimeout(() => {
-                        lastCall = Date.now();
-                        timer = null;
-                        fn.apply(this, args);
-                    }, remaining);
-                }
-            };
-        }
-
         // ============================================================
         // 字幕拦截 — 静默捕获 B 站 AI 字幕数据
         // ============================================================
 
         const SUBTITLE_URL_PATTERN = /aisubtitle\.hdslb\.com/i;
+        let subtitleRequestHooksInstalled = false;
 
-        const originalFetch = window.fetch;
-        // 必须原样返回 B 站创建的 Promise，不能用 async 包装它，否则会改变所有请求的时序。
-        window.fetch = function (...args) {
-            const url = typeof args[0] === 'string' ? args[0] : (args[0]?.url || '');
-            const responsePromise = originalFetch.apply(this, args);
+        // 仅在用户主动获取字幕时安装，避免影响播放页初始资源请求。
+        function installSubtitleRequestHooks() {
+            if (subtitleRequestHooksInstalled) return;
+            subtitleRequestHooksInstalled = true;
+
+            const originalFetch = window.fetch;
+            // 必须原样返回 B 站创建的 Promise，不能用 async 包装它，否则会改变所有请求的时序。
+            window.fetch = function (...args) {
+                const url = typeof args[0] === 'string' ? args[0] : (args[0]?.url || '');
+                const responsePromise = originalFetch.apply(this, args);
+                try {
+                    if (SUBTITLE_URL_PATTERN.test(url)) {
+                        responsePromise.then(response => {
+                            console.debug('[BiliLens] fetch 拦截到字幕请求');
+                            return response.clone().json();
+                        }).then(json => handleInterceptedSubtitle(url, json)).catch(() => {});
+                    }
+                } catch (e) {}
+                return responsePromise;
+            };
             try {
-                if (SUBTITLE_URL_PATTERN.test(url)) {
-                    responsePromise.then(response => {
-                        console.debug('[BiliLens] fetch 拦截到字幕请求');
-                        return response.clone().json();
-                    }).then(json => handleInterceptedSubtitle(url, json)).catch(() => {});
-                }
+                Object.defineProperty(window.fetch, 'toString', { value: () => 'function fetch() { [native code] }' });
             } catch (e) {}
-            return responsePromise;
-        };
-        try {
-            Object.defineProperty(window.fetch, 'toString', { value: () => 'function fetch() { [native code] }' });
-        } catch (e) {}
 
-        const originalOpen = XMLHttpRequest.prototype.open;
-        const originalSend = XMLHttpRequest.prototype.send;
-        XMLHttpRequest.prototype.open = function (method, url, ...rest) {
-            this._interceptedUrl = url;
-            return originalOpen.call(this, method, url, ...rest);
-        };
-        XMLHttpRequest.prototype.send = function (body) {
-            if (!this._bsubHooked) {
-                this._bsubHooked = true;
-                this.addEventListener('load', () => {
-                    try {
-                        const url = this._interceptedUrl || '';
-                        if (SUBTITLE_URL_PATTERN.test(url)) {
-                            console.debug('[BiliLens] XHR 拦截到字幕请求');
-                            handleInterceptedSubtitle(url, JSON.parse(this.responseText));
-                        }
-                    } catch (e) {}
-                });
-            }
-            return originalSend.call(this, body);
-        };
+            const originalOpen = XMLHttpRequest.prototype.open;
+            const originalSend = XMLHttpRequest.prototype.send;
+            XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+                this._interceptedUrl = url;
+                return originalOpen.call(this, method, url, ...rest);
+            };
+            XMLHttpRequest.prototype.send = function (body) {
+                if (!this._bsubHooked) {
+                    this._bsubHooked = true;
+                    this.addEventListener('load', () => {
+                        try {
+                            const url = this._interceptedUrl || '';
+                            if (SUBTITLE_URL_PATTERN.test(url)) {
+                                console.debug('[BiliLens] XHR 拦截到字幕请求');
+                                handleInterceptedSubtitle(url, JSON.parse(this.responseText));
+                            }
+                        } catch (e) {}
+                    });
+                }
+                return originalSend.call(this, body);
+            };
+        }
 
         // ============================================================
         // 自动获取字幕 — 模拟用户操作触发字幕加载
@@ -213,9 +199,13 @@
             return body.map(item => item.content).join('\n');
         }
 
-        function getVideoTitle() {
-            const title = document.title.replace('_哔哩哔哩_bilibili', '').replace('-哔哩哔哩', '').trim();
-            return title.replace(/[<>:"/\\|?*]/g, '_') || 'subtitle';
+        function copyToClipboard(text) {
+            if (!text) return;
+            if (typeof GM_setClipboard === 'function') {
+                GM_setClipboard(text);
+            } else {
+                navigator.clipboard.writeText(text).catch(() => {});
+            }
         }
 
         // ============================================================
@@ -645,6 +635,13 @@
                         font-size: 12px;
                         color: #86868b;
                     }
+                    #bsub-line-count.copyable {
+                        color: #007aff;
+                        cursor: pointer;
+                    }
+                    #bsub-line-count.copyable:hover {
+                        text-decoration: underline;
+                    }
                     #bsub-bar-actions {
                         display: flex;
                         align-items: center;
@@ -1036,6 +1033,7 @@
                     content.textContent = '';
                     updateUI();
 
+                    installSubtitleRequestHooks();
                     const opened = autoOpenSubtitle();
                     if (!opened) {
                         STATE.isFetchingSubtitle = false;
@@ -1089,12 +1087,17 @@
             document.getElementById('bsub-copy-btn').addEventListener('click', () => {
                 const text = STATE.lastSummaryMd;
                 if (!text) return;
-                if (typeof GM_setClipboard === 'function') {
-                    GM_setClipboard(text);
-                } else {
-                    navigator.clipboard.writeText(text).catch(() => {});
-                }
+                copyToClipboard(text);
                 showToast('已复制');
+            });
+
+            // 点击“字幕 xx 行”复制原始字幕文本。
+            document.getElementById('bsub-line-count').addEventListener('click', () => {
+                if (!document.getElementById('bsub-line-count').classList.contains('copyable')) return;
+                const subtitleText = subtitleToTxt(getFirstSubtitle());
+                if (!subtitleText) return;
+                copyToClipboard(subtitleText);
+                showToast('字幕已复制');
             });
 
             // 设置
@@ -1157,6 +1160,8 @@
                 dot.className = baseClass + ' generating';
                 dot.title = '正在获取字幕';
                 lineCountEl.textContent = '获取字幕中…';
+                lineCountEl.classList.remove('copyable');
+                lineCountEl.removeAttribute('title');
                 statusText.textContent = '正在获取';
                 statusText.style.color = '#007aff';
                 return;
@@ -1167,6 +1172,8 @@
                 dot.className = baseClass + ' active';
                 dot.title = '点击进行 AI 总结';
                 lineCountEl.textContent = '字幕 ' + lines + ' 行';
+                lineCountEl.classList.add('copyable');
+                lineCountEl.title = '点击复制字幕';
 
                 if (!isAIConfigured()) {
                     statusText.textContent = '需配置 AI';
@@ -1179,6 +1186,8 @@
                 dot.className = baseClass;
                 dot.title = '点击获取字幕并 AI 总结';
                 lineCountEl.textContent = STATE.subtitleFetchFailed ? '获取字幕 0 行' : '—';
+                lineCountEl.classList.remove('copyable');
+                lineCountEl.removeAttribute('title');
                 statusText.textContent = STATE.subtitleFetchFailed ? '未找到字幕' : '点击开始';
                 statusText.style.color = '#86868b';
             }
