@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/bilidanmu/BiliLens
-    // @version      4.5.0
+    // @version      4.6.0
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -240,6 +240,9 @@
             model: 'ai_model',
             prompt: 'ai_prompt',
         };
+        const SUMMARY_HISTORY_KEY = 'summary_history_v1';
+        const SUMMARY_HISTORY_LIMIT = 20;
+        const SUMMARY_HISTORY_MAX_LENGTH = 100000;
 
         function getAIConfig() {
             return {
@@ -267,6 +270,58 @@
             return Object.entries(PROMPT_TEMPLATES).find(([, template]) => template.prompt === prompt)?.[0] || 'custom';
         }
 
+        function getCurrentVideoKey() {
+            const url = new URL(window.location.href);
+            const videoId = url.pathname.match(/\/video\/(BV[^/?]+)/i)?.[1]
+                || url.pathname.match(/\/bangumi\/play\/(ep\d+|ss\d+)/i)?.[1];
+            if (!videoId) return null;
+            const part = url.searchParams.get('p');
+            return part ? `${videoId}-p${part}` : videoId;
+        }
+
+        function getSummaryHistory() {
+            try {
+                const history = GM_getValue(SUMMARY_HISTORY_KEY, []);
+                return Array.isArray(history) ? history : [];
+            } catch (e) {
+                return [];
+            }
+        }
+
+        function saveSummaryToHistory(summary, videoKey = getCurrentVideoKey(), title = document.title) {
+            if (!videoKey || !summary || summary.length > SUMMARY_HISTORY_MAX_LENGTH) return;
+
+            const entry = {
+                videoKey,
+                title,
+                summary,
+                updatedAt: Date.now(),
+            };
+            const history = getSummaryHistory().filter(item => item?.videoKey !== videoKey);
+            history.unshift(entry);
+            GM_setValue(SUMMARY_HISTORY_KEY, history.slice(0, SUMMARY_HISTORY_LIMIT));
+        }
+
+        function restoreSummaryFromHistory() {
+            const videoKey = getCurrentVideoKey();
+            if (!videoKey) return false;
+
+            const entry = getSummaryHistory().find(item => item?.videoKey === videoKey && typeof item.summary === 'string');
+            if (!entry) return false;
+
+            STATE.lastSummaryMd = entry.summary;
+            const contentEl = document.getElementById('bsub-content');
+            const copyBtn = document.getElementById('bsub-copy-btn');
+            if (!contentEl || !copyBtn) return false;
+            contentEl.innerHTML = renderMarkdown(entry.summary);
+            copyBtn.style.display = 'inline-flex';
+            updateUI();
+            const statusText = document.getElementById('bsub-status-text');
+            statusText.textContent = '已恢复本地总结';
+            statusText.style.color = '#34c759';
+            return true;
+        }
+
         // ============================================================
         // AI 视频总结 — 流式接收，实时渲染
         // ============================================================
@@ -288,6 +343,8 @@
             }
 
             STATE.isGenerating = true;
+            const summaryVideoKey = getCurrentVideoKey();
+            const summaryVideoTitle = document.title;
 
             const subtitleText = subtitleToTxt(json);
             const contentEl = document.getElementById('bsub-content');
@@ -423,6 +480,7 @@
 
                 clearTimeout(timeoutId);
                 STATE.lastSummaryMd = fullText;
+                saveSummaryToHistory(fullText, summaryVideoKey, summaryVideoTitle);
                 statusEl.textContent = '完成';
                 statusEl.style.color = '#34c759';
                 copyBtn.style.display = 'inline-flex';
@@ -1009,6 +1067,7 @@
             bindUIEvents();
             STATE.uiCreated = true;
             updateUI();
+            restoreSummaryFromHistory();
 
             // 入口按钮植入 B 站工具栏（工具栏可能延迟出现，轮询等待）
             const dotPoll = setInterval(() => {
@@ -1253,6 +1312,14 @@
                     statusText.textContent = '点击图标开始';
                     statusText.style.color = '#86868b';
                 }
+            } else if (STATE.lastSummaryMd) {
+                dot.className = baseClass + ' active';
+                dot.title = '查看已保存的总结';
+                lineCountEl.textContent = '已保存';
+                lineCountEl.classList.remove('copyable');
+                lineCountEl.removeAttribute('title');
+                statusText.textContent = '本地总结';
+                statusText.style.color = '#34c759';
             } else {
                 dot.className = baseClass;
                 dot.title = '点击获取字幕并 AI 总结';
@@ -1344,6 +1411,7 @@
                 const copyBtn = document.getElementById('bsub-copy-btn');
                 if (copyBtn) copyBtn.style.display = 'none';
                 updateUI();
+                restoreSummaryFromHistory();
                 // 重新植入入口按钮到新的工具栏
                 const dotPoll = setInterval(() => {
                     if (STATE.dotInserted) {
