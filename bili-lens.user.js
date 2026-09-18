@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/bilidanmu/BiliLens
-    // @version      4.12.0
+    // @version      4.13.0
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -218,6 +218,37 @@
         function subtitleToTxt(json) {
             const body = json?.body || [];
             return body.map(item => item?.content || '').join('\n');
+        }
+
+        const TIMESTAMP_SAMPLE_INTERVAL = 15;
+        const CHAPTER_PROMPT = '请在总结末尾增加“关键节点”小节，选取 3 至 8 个重要片段，每行使用“- [MM:SS] 节点说明”的格式。时间点必须取自字幕行首已有的时间标记。';
+
+        function subtitleToPromptText(json) {
+            const body = json?.body || [];
+            const groups = [];
+
+            for (const item of body) {
+                const content = item?.content?.trim();
+                if (!content) continue;
+                const startTime = Number(item?.from);
+                if (!Number.isFinite(startTime) || startTime < 0) {
+                    if (groups.length) groups[groups.length - 1].contents.push(content);
+                    else groups.push({ startTime: 0, bucket: 0, contents: [content] });
+                    continue;
+                }
+
+                const bucket = Math.floor(startTime / TIMESTAMP_SAMPLE_INTERVAL);
+                const current = groups[groups.length - 1];
+                if (!current || current.bucket !== bucket) {
+                    groups.push({ startTime, bucket, contents: [content] });
+                } else {
+                    current.contents.push(content);
+                }
+            }
+
+            return groups
+                .map(group => `[${formatTimestamp(group.startTime)}] ${group.contents.join(' ')}`)
+                .join('\n');
         }
 
         function copyToClipboard(text) {
@@ -529,7 +560,9 @@
                 model: config.model,
                 messages: [{
                     role: 'user',
-                    content: (config.prompt || DEFAULT_PROMPT) + '\n\n' + subtitleToTxt(json),
+                    content: (config.prompt || DEFAULT_PROMPT)
+                        + '\n\n' + CHAPTER_PROMPT
+                        + '\n\n' + subtitleToPromptText(json),
                 }],
                 temperature: 0.7,
                 stream: true,
@@ -617,8 +650,24 @@
                 const timestamp = hours ? `${hours}:${minutes}:${seconds}` : `${minutes}:${seconds}`;
                 const seekSeconds = parseTimestamp(timestamp);
                 if (seekSeconds === null) return match;
-                return `<button type="button" class="bsub-timestamp" data-seconds="${seekSeconds}" aria-label="跳转至 ${timestamp}">${match}</button>`;
+                return `<a href="#" class="bsub-timestamp" data-type="seek" data-video-time="${seekSeconds}" aria-label="跳转至 ${timestamp}">${match}</a>`;
             });
+        }
+
+        function seekVideoTo(seconds) {
+            const videos = [...document.querySelectorAll('video')];
+            const video = videos.find(item => Number.isFinite(item.duration) && item.duration > 0) || videos[0];
+            if (!video) return false;
+
+            const seek = () => {
+                const duration = Number(video.duration);
+                video.currentTime = Number.isFinite(duration) && duration > 0
+                    ? Math.min(seconds, Math.max(duration - 0.05, 0))
+                    : seconds;
+            };
+            if (video.readyState === 0) video.addEventListener('loadedmetadata', seek, { once: true });
+            else seek();
+            return true;
         }
 
         // ============================================================
@@ -969,6 +1018,7 @@
                     #bsub-content em { font-style: italic; }
                     #bsub-content .bsub-timestamp {
                         appearance: none;
+                        display: inline-block;
                         border: 0;
                         border-radius: 4px;
                         padding: 1px 4px;
@@ -976,6 +1026,8 @@
                         background: rgba(0, 122, 255, 0.12);
                         color: #007aff;
                         font: inherit;
+                        line-height: inherit;
+                        text-decoration: none;
                         cursor: pointer;
                     }
                     #bsub-content .bsub-timestamp:hover {
@@ -1439,14 +1491,13 @@
                 const timestamp = event.target.closest('.bsub-timestamp');
                 if (!timestamp) return;
 
-                const seekSeconds = Number(timestamp.dataset.seconds);
-                const video = document.querySelector('.bpx-player-video-wrap video, #bilibili-player video, video');
-                if (!Number.isFinite(seekSeconds) || !video) {
+                event.preventDefault();
+                event.stopPropagation();
+                const seekSeconds = Number(timestamp.dataset.videoTime);
+                if (!Number.isFinite(seekSeconds) || !seekVideoTo(seekSeconds)) {
                     showToast('未找到视频播放器');
                     return;
                 }
-                const maxTime = Number.isFinite(video.duration) ? Math.max(0, video.duration - 0.1) : seekSeconds;
-                video.currentTime = Math.min(seekSeconds, maxTime);
                 showToast(`已跳转至 ${formatTimestamp(seekSeconds)}`);
             });
 
