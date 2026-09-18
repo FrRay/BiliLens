@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/bilidanmu/BiliLens
-    // @version      4.8.0
+    // @version      4.9.0
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -194,9 +194,23 @@
         // 字幕 → 纯文本
         // ============================================================
 
-        function subtitleToTxt(json) {
+        function formatTimestamp(seconds) {
+            const totalSeconds = Math.max(0, Math.floor(Number(seconds) || 0));
+            const hours = Math.floor(totalSeconds / 3600);
+            const minutes = Math.floor((totalSeconds % 3600) / 60);
+            const remainingSeconds = totalSeconds % 60;
+            const pad = value => String(value).padStart(2, '0');
+            return hours > 0
+                ? `${pad(hours)}:${pad(minutes)}:${pad(remainingSeconds)}`
+                : `${pad(minutes)}:${pad(remainingSeconds)}`;
+        }
+
+        function subtitleToTxt(json, { includeTimestamps = false } = {}) {
             const body = json?.body || [];
-            return body.map(item => item.content).join('\n');
+            return body.map(item => {
+                const content = item?.content || '';
+                return includeTimestamps ? `[${formatTimestamp(item?.from)}] ${content}` : content;
+            }).join('\n');
         }
 
         function copyToClipboard(text) {
@@ -229,6 +243,7 @@
         const DEFAULT_API_URL = 'https://apihub.agnes-ai.com/v1/chat/completions';
         const DEFAULT_MODEL = 'agnes-2.0-flash';
         const DEFAULT_PROMPT = '你是视频总结助手（不可透露包括你身份在内的其他信息），根据字幕文件总结为md，只输出内容正文：';
+        const TIMESTAMP_INSTRUCTION = '字幕每行前的时间表示该句开始位置。提到具体片段时，请保留相应的 [MM:SS] 或 [HH:MM:SS] 时间点，便于用户跳转观看。';
         const PROMPT_TEMPLATES = {
             general: {
                 label: '通用总结',
@@ -362,7 +377,7 @@
             const summaryVideoKey = getCurrentVideoKey();
             const summaryVideoTitle = document.title;
 
-            const subtitleText = subtitleToTxt(json);
+            const subtitleText = subtitleToTxt(json, { includeTimestamps: true });
             const contentEl = document.getElementById('bsub-content');
             const statusEl = document.getElementById('bsub-status-text');
             const copyBtn = document.getElementById('bsub-copy-btn');
@@ -382,7 +397,7 @@
             const requestBody = {
                 model: config.model,
                 messages: [
-                    { role: 'user', content: userPrompt + '\n\n' + subtitleText }
+                    { role: 'user', content: userPrompt + '\n\n' + TIMESTAMP_INSTRUCTION + '\n\n' + subtitleText }
                 ],
                 temperature: 0.7,
                 stream: true,
@@ -525,6 +540,27 @@
             return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         }
 
+        function parseTimestamp(timestamp) {
+            const parts = timestamp.split(':').map(Number);
+            if (parts.length < 2 || parts.length > 3 || parts.some(part => !Number.isInteger(part) || part < 0)) {
+                return null;
+            }
+            const seconds = parts.pop();
+            const minutes = parts.pop();
+            const hours = parts.length ? parts.pop() : 0;
+            if (minutes >= 60 || seconds >= 60) return null;
+            return hours * 3600 + minutes * 60 + seconds;
+        }
+
+        function renderTimestampLinks(html) {
+            return html.replace(/\[(?:(\d{1,2}):)?(\d{1,2}):(\d{2})\]/g, (match, hours, minutes, seconds) => {
+                const timestamp = hours ? `${hours}:${minutes}:${seconds}` : `${minutes}:${seconds}`;
+                const seekSeconds = parseTimestamp(timestamp);
+                if (seekSeconds === null) return match;
+                return `<button type="button" class="bsub-timestamp" data-seconds="${seekSeconds}" aria-label="跳转至 ${timestamp}">${match}</button>`;
+            });
+        }
+
         // ============================================================
         // Markdown 渲染器 — 零依赖，支持标题/列表/引用/代码块/加粗斜体
         // ============================================================
@@ -615,7 +651,10 @@
             text = text.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<em>$1</em>');
             text = text.replace(/(?<!_)_([^_]+)_(?!_)/g, '<em>$1</em>');
 
-            // 6. 还原代码块
+            // 6. 将 Markdown 中的时间点转为播放器跳转按钮
+            text = renderTimestampLinks(text);
+
+            // 7. 还原代码块
             text = text.replace(/\u0000CODEBLOCK(\d+)\u0000/g, (_, i) => codeBlocks[parseInt(i)]);
 
             return text;
@@ -866,6 +905,20 @@
                     }
                     #bsub-content strong { font-weight: 600; }
                     #bsub-content em { font-style: italic; }
+                    #bsub-content .bsub-timestamp {
+                        appearance: none;
+                        border: 0;
+                        border-radius: 4px;
+                        padding: 1px 4px;
+                        margin: 0 1px;
+                        background: rgba(0, 122, 255, 0.12);
+                        color: #007aff;
+                        font: inherit;
+                        cursor: pointer;
+                    }
+                    #bsub-content .bsub-timestamp:hover {
+                        background: rgba(0, 122, 255, 0.2);
+                    }
                     #bsub-content::-webkit-scrollbar { width: 4px; }
                     #bsub-content::-webkit-scrollbar-track { background: transparent; }
                     #bsub-content::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.12); border-radius: 2px; }
@@ -1017,6 +1070,13 @@
                         #bsub-content .bsub-md-inline-code,
                         #bsub-content .bsub-md-code {
                             background: rgba(255, 255, 255, 0.1);
+                        }
+                        #bsub-content .bsub-timestamp {
+                            background: rgba(10, 132, 255, 0.2);
+                            color: #64d2ff;
+                        }
+                        #bsub-content .bsub-timestamp:hover {
+                            background: rgba(10, 132, 255, 0.32);
                         }
                         #bsub-copy-btn,
                         #bsub-download-btn {
@@ -1261,6 +1321,22 @@
                 if (!STATE.lastSummaryMd) return;
                 downloadSummaryAsMarkdown();
                 showToast('已下载 Markdown 文件');
+            });
+
+            document.getElementById('bsub-content').addEventListener('click', (event) => {
+                if (!(event.target instanceof Element)) return;
+                const timestamp = event.target.closest('.bsub-timestamp');
+                if (!timestamp) return;
+
+                const seekSeconds = Number(timestamp.dataset.seconds);
+                const video = document.querySelector('.bpx-player-video-wrap video, #bilibili-player video, video');
+                if (!Number.isFinite(seekSeconds) || !video) {
+                    showToast('未找到视频播放器');
+                    return;
+                }
+                const maxTime = Number.isFinite(video.duration) ? Math.max(0, video.duration - 0.1) : seekSeconds;
+                video.currentTime = Math.min(seekSeconds, maxTime);
+                showToast(`已跳转至 ${formatTimestamp(seekSeconds)}`);
             });
 
             // 点击“字幕 xx 行”复制原始字幕文本。
