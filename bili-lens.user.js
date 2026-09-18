@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/bilidanmu/BiliLens
-    // @version      4.11.1
+    // @version      4.12.0
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -26,6 +26,7 @@
             toolbarObserver: null,
             toolbarObserverRoot: null,
             isGenerating: false,
+            summaryRequest: null,
             lastSummaryMd: '',  // 供复制
             isFetchingSubtitle: false,
             subtitleFetchFailed: false,
@@ -336,7 +337,11 @@
             };
             const history = getSummaryHistory().filter(item => item?.videoKey !== videoKey);
             history.unshift(entry);
-            GM_setValue(SUMMARY_HISTORY_KEY, history.slice(0, SUMMARY_HISTORY_LIMIT));
+            try {
+                GM_setValue(SUMMARY_HISTORY_KEY, history.slice(0, SUMMARY_HISTORY_LIMIT));
+            } catch (error) {
+                console.warn('[BiliLens] 本地总结保存失败:', error);
+            }
         }
 
         function removeSummaryFromHistory(videoKey = getCurrentVideoKey()) {
@@ -348,6 +353,14 @@
             return true;
         }
 
+        function setSummaryActionsVisible(visible) {
+            const display = visible ? 'inline-flex' : 'none';
+            ['bsub-copy-btn', 'bsub-download-btn', 'bsub-clear-btn'].forEach(id => {
+                const button = document.getElementById(id);
+                if (button) button.style.display = display;
+            });
+        }
+
         function restoreSummaryFromHistory() {
             const videoKey = getCurrentVideoKey();
             if (!videoKey) return false;
@@ -357,14 +370,9 @@
 
             STATE.lastSummaryMd = entry.summary;
             const contentEl = document.getElementById('bsub-content');
-            const copyBtn = document.getElementById('bsub-copy-btn');
-            const downloadBtn = document.getElementById('bsub-download-btn');
-            const clearBtn = document.getElementById('bsub-clear-btn');
-            if (!contentEl || !copyBtn || !downloadBtn || !clearBtn) return false;
+            if (!contentEl) return false;
             contentEl.innerHTML = renderMarkdown(entry.summary);
-            copyBtn.style.display = 'inline-flex';
-            downloadBtn.style.display = 'inline-flex';
-            clearBtn.style.display = 'inline-flex';
+            setSummaryActionsVisible(true);
             updateUI();
             const statusText = document.getElementById('bsub-status-text');
             statusText.textContent = '已恢复本地总结';
@@ -373,8 +381,98 @@
         }
 
         // ============================================================
-        // AI 视频总结 — 流式接收，实时渲染
+        // AI 视频总结 — 同时兼容 SSE 与普通 JSON 响应
         // ============================================================
+
+        function extractAIText(payload) {
+            const choice = payload?.choices?.[0];
+            const content = choice?.delta?.content
+                ?? choice?.message?.content
+                ?? choice?.text
+                ?? payload?.content
+                ?? '';
+            if (typeof content === 'string') return content;
+            if (!Array.isArray(content)) return '';
+            return content.map(part => typeof part === 'string' ? part : (part?.text || '')).join('');
+        }
+
+        async function readAIResponse(response, onProgress) {
+            if (!response.body) {
+                const text = extractAIText(await response.json());
+                if (!text) throw new Error('模型未返回总结内容');
+                onProgress(text);
+                return text;
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            let buffer = '';
+            let rawResponse = '';
+            let fullText = '';
+
+            const consumeLine = line => {
+                const trimmed = line.trim();
+                if (!trimmed || trimmed.startsWith(':') || /^(event|id|retry):/i.test(trimmed)) return;
+                const data = trimmed.startsWith('data:') ? trimmed.slice(5).trim() : trimmed;
+                if (!data || data === '[DONE]') return;
+                try {
+                    const content = extractAIText(JSON.parse(data));
+                    if (!content) return;
+                    fullText += content;
+                    onProgress(fullText);
+                } catch (_) {}
+            };
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                const chunk = decoder.decode(value, { stream: true });
+                rawResponse += chunk;
+                buffer += chunk;
+                const lines = buffer.split(/\r?\n/);
+                buffer = lines.pop() || '';
+                lines.forEach(consumeLine);
+            }
+
+            const tail = decoder.decode();
+            rawResponse += tail;
+            buffer += tail;
+            if (buffer.trim()) consumeLine(buffer);
+
+            // 部分兼容接口会忽略 stream 参数，直接返回一份 JSON。
+            if (!fullText && rawResponse.trim()) {
+                try {
+                    fullText = extractAIText(JSON.parse(rawResponse));
+                    if (fullText) onProgress(fullText);
+                } catch (_) {}
+            }
+            if (!fullText) throw new Error('模型未返回总结内容');
+            return fullText;
+        }
+
+        async function requestAISummary(config, requestBody, signal, onProgress) {
+            const response = await fetch(config.apiUrl, {
+                signal,
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': 'Bearer ' + config.apiKey,
+                    'Accept': 'text/event-stream, application/json',
+                },
+                body: JSON.stringify(requestBody),
+            });
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                let message = `HTTP ${response.status}`;
+                try {
+                    const errorData = JSON.parse(errorText);
+                    message = errorData?.error?.message || errorData?.message || message;
+                } catch (_) {}
+                throw new Error(message);
+            }
+            return readAIResponse(response, onProgress);
+        }
 
         async function generateAISummary() {
             if (STATE.isGenerating) return;
@@ -392,169 +490,109 @@
                 return;
             }
 
-            STATE.isGenerating = true;
-            const summaryVideoKey = getCurrentVideoKey();
-            const summaryVideoTitle = document.title;
-
-            const subtitleText = subtitleToTxt(json);
             const contentEl = document.getElementById('bsub-content');
             const statusEl = document.getElementById('bsub-status-text');
-            const copyBtn = document.getElementById('bsub-copy-btn');
-            const downloadBtn = document.getElementById('bsub-download-btn');
-            const clearBtn = document.getElementById('bsub-clear-btn');
             const refreshBtn = document.getElementById('bsub-refresh');
+            const panel = document.getElementById('bsub-panel');
+            if (!contentEl || !statusEl || !panel) return;
 
-            // 显示面板，旧内容保留到新内容到达后再替换
-            document.getElementById('bsub-panel').classList.add('visible');
+            const summaryVideoKey = getCurrentVideoKey();
+            const summaryVideoTitle = document.title;
+            const previousSummary = STATE.lastSummaryMd;
+            const controller = new AbortController();
+            const requestId = Symbol('summary-request');
+            let fullText = '';
+            let renderFrame = 0;
+            let timedOut = false;
+
+            STATE.isGenerating = true;
+            STATE.summaryRequest = { id: requestId, controller };
+            panel.classList.add('visible');
             statusEl.textContent = '生成中…';
             statusEl.style.color = '#86868b';
-            copyBtn.style.display = 'none';
-            downloadBtn.style.display = 'none';
-            clearBtn.style.display = 'none';
-            if (refreshBtn) refreshBtn.classList.add('spinning');
+            setSummaryActionsVisible(false);
+            refreshBtn?.classList.add('spinning');
+            updateUI();
 
-            // 提示词 + 字幕文本拼接，字幕原文不暴露给用户
-            const userPrompt = config.prompt || DEFAULT_PROMPT;
+            const renderProgress = text => {
+                fullText = text;
+                if (renderFrame) return;
+                renderFrame = requestAnimationFrame(() => {
+                    renderFrame = 0;
+                    if (STATE.summaryRequest?.id !== requestId) return;
+                    contentEl.innerHTML = renderMarkdown(fullText);
+                    contentEl.scrollTop = contentEl.scrollHeight;
+                });
+            };
+
             const requestBody = {
                 model: config.model,
-                messages: [
-                    { role: 'user', content: userPrompt + '\n\n' + subtitleText }
-                ],
+                messages: [{
+                    role: 'user',
+                    content: (config.prompt || DEFAULT_PROMPT) + '\n\n' + subtitleToTxt(json),
+                }],
                 temperature: 0.7,
                 stream: true,
             };
 
-            console.debug('[BiliLens] 开始AI总结（fetch流式），模型:', config.model);
-
-            let fullText = '';
-            let hasNewContent = false;
-
-            // 节流渲染：流式过程中实时 Markdown 渲染，但限制频率避免卡顿
-            // 第一次收到新内容时才清除旧内容
-            const renderAndScroll = throttle(() => {
-                contentEl.innerHTML = renderMarkdown(fullText);
-                contentEl.scrollTop = contentEl.scrollHeight;
-            }, 100);
-
-            function appendText() {
-                if (!hasNewContent && fullText) {
-                    hasNewContent = true;
-                }
-                renderAndScroll();
-            }
-
-            // SSE 流解析：逐行提取 data 字段中的 AI 输出
-            let sseBuffer = '';
-
-            function processSSEChunk(chunk) {
-                sseBuffer += chunk;
-                const lines = sseBuffer.split('\n');
-                // 最后一行可能不完整，保留到下次
-                sseBuffer = lines.pop();
-                for (const line of lines) {
-                    const trimmed = line.trim();
-                    if (!trimmed || !trimmed.startsWith('data:')) continue;
-                    const data = trimmed.slice(5).trim();
-                    if (data === '[DONE]') continue;
-                    try {
-                        const parsed = JSON.parse(data);
-                        const choices = parsed.choices || [];
-                        if (!choices.length) continue;
-                        const delta = choices[0].delta || {};
-                        const content = delta.content || '';
-                        if (content) fullText += content;
-                    } catch (_) {}
-                }
-            }
-
-            // 3 分钟超时保护
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 180000);
+            const timeoutId = setTimeout(() => {
+                timedOut = true;
+                controller.abort();
+            }, 120000);
 
             try {
-                // 使用 ReadableStream 逐块读取
-                const response = await fetch(config.apiUrl, {
-                    signal: controller.signal,
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': 'Bearer ' + config.apiKey,
-                        'Accept': 'text/event-stream',
-                    },
-                    body: JSON.stringify(requestBody),
-                });
+                console.debug('[BiliLens] 开始 AI 总结，模型:', config.model);
+                fullText = await requestAISummary(config, requestBody, controller.signal, renderProgress);
+                if (renderFrame) cancelAnimationFrame(renderFrame);
 
-                if (!response.ok) {
-                    const errText = await response.text();
-                    let errMsg = `HTTP ${response.status}`;
-                    try {
-                        const errData = JSON.parse(errText);
-                        errMsg = errData?.error?.message || errData?.message || errMsg;
-                    } catch (_) {}
-                    throw new Error(errMsg);
-                }
-
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder('utf-8');
-
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    const chunk = decoder.decode(value, { stream: true });
-                    processSSEChunk(chunk);
-                    appendText();
-                }
-
-                // 处理 buffer 中的残留行
-                if (sseBuffer.trim()) {
-                    processSSEChunk('\n');
-                    appendText();
-                }
-
-                // 回退：流式无内容时，改用普通请求
-                if (!fullText) {
-                    clearTimeout(timeoutId);
-                    try {
-                        const response2 = await fetch(config.apiUrl, {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                                'Authorization': 'Bearer ' + config.apiKey,
-                            },
-                            body: JSON.stringify({ ...requestBody, stream: false }),
-                        });
-                        const data = await response2.json();
-                        fullText = data?.choices?.[0]?.message?.content
-                                || data?.choices?.[0]?.text
-                                || data?.content
-                                || '';
-                        appendText();
-                    } catch (_) {}
-                }
-
-                clearTimeout(timeoutId);
-                STATE.lastSummaryMd = fullText;
                 saveSummaryToHistory(fullText, summaryVideoKey, summaryVideoTitle);
-                statusEl.textContent = '完成';
-                statusEl.style.color = '#34c759';
-                copyBtn.style.display = 'inline-flex';
-                downloadBtn.style.display = 'inline-flex';
-                clearBtn.style.display = 'inline-flex';
-                // 生成完成后滚动到顶部
-                contentEl.scrollTop = 0;
-                console.debug('[BiliLens] AI总结完成，共', fullText.length, '字');
-            } catch (e) {
-                clearTimeout(timeoutId);
-                console.error('[BiliLens] AI总结失败:', e);
-                const isTimeout = e.name === 'AbortError';
-                statusEl.textContent = '失败';
-                statusEl.style.color = '#ff3b30';
-                contentEl.textContent = '';
-                contentEl.innerHTML = '<span style="color:#ff3b30;">' + escapeForHtml(isTimeout ? '请求超时' : (e.message || '未知错误')) + '</span>';
+                if (STATE.summaryRequest?.id === requestId && getCurrentVideoKey() === summaryVideoKey) {
+                    STATE.lastSummaryMd = fullText;
+                    contentEl.innerHTML = renderMarkdown(fullText);
+                    contentEl.scrollTop = 0;
+                    statusEl.textContent = '完成';
+                    statusEl.style.color = '#34c759';
+                    setSummaryActionsVisible(true);
+                }
+                console.debug('[BiliLens] AI 总结完成，共', fullText.length, '字');
+            } catch (error) {
+                console.error('[BiliLens] AI 总结失败:', error);
+                if (renderFrame) cancelAnimationFrame(renderFrame);
+
+                // 页面切换时仍保存已经返回的部分，但不再改动新页面的界面。
+                if (fullText.trim()) {
+                    saveSummaryToHistory(fullText, summaryVideoKey, summaryVideoTitle);
+                }
+                if (STATE.summaryRequest?.id !== requestId || getCurrentVideoKey() !== summaryVideoKey) return;
+
+                if (fullText.trim()) {
+                    STATE.lastSummaryMd = fullText;
+                    contentEl.innerHTML = renderMarkdown(fullText);
+                    statusEl.textContent = '生成中断，已保留当前内容';
+                    statusEl.style.color = '#ff9500';
+                    setSummaryActionsVisible(true);
+                } else if (previousSummary) {
+                    STATE.lastSummaryMd = previousSummary;
+                    contentEl.innerHTML = renderMarkdown(previousSummary);
+                    statusEl.textContent = '生成失败，已保留原总结';
+                    statusEl.style.color = '#ff9500';
+                    setSummaryActionsVisible(true);
+                } else {
+                    const message = timedOut || controller.signal.aborted
+                        ? '请求超时'
+                        : (error?.message || '未知错误');
+                    contentEl.innerHTML = '<span style="color:#ff3b30;">' + escapeForHtml(message) + '</span>';
+                    statusEl.textContent = '失败';
+                    statusEl.style.color = '#ff3b30';
+                }
             } finally {
-                STATE.isGenerating = false;
-                if (refreshBtn) refreshBtn.classList.remove('spinning');
-                updateUI();
+                clearTimeout(timeoutId);
+                if (STATE.summaryRequest?.id === requestId) {
+                    STATE.summaryRequest = null;
+                    STATE.isGenerating = false;
+                    refreshBtn?.classList.remove('spinning');
+                    updateUI();
+                }
             }
         }
 
@@ -1622,6 +1660,11 @@
             lastUrl = window.location.href;
             console.debug('[BiliLens] SPA 路由切换:', lastUrl);
 
+            STATE.summaryRequest?.controller.abort();
+            STATE.summaryRequest = null;
+            STATE.isGenerating = false;
+            document.getElementById('bsub-refresh')?.classList.remove('spinning');
+
             // 清理所有未完成的轮询
             for (const id of STATE.activePolls) {
                 clearInterval(id);
@@ -1643,12 +1686,7 @@
                 if (panel) panel.classList.remove('visible');
                 const content = document.getElementById('bsub-content');
                 if (content) content.textContent = '';
-                const copyBtn = document.getElementById('bsub-copy-btn');
-                if (copyBtn) copyBtn.style.display = 'none';
-                const downloadBtn = document.getElementById('bsub-download-btn');
-                if (downloadBtn) downloadBtn.style.display = 'none';
-                const clearBtn = document.getElementById('bsub-clear-btn');
-                if (clearBtn) clearBtn.style.display = 'none';
+                setSummaryActionsVisible(false);
                 updateUI();
                 restoreSummaryFromHistory();
                 // 重新植入入口按钮到新的工具栏
