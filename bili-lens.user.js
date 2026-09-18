@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/bilidanmu/BiliLens
-    // @version      4.3.4
+    // @version      4.4.0
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -215,6 +215,24 @@
         const DEFAULT_API_URL = 'https://apihub.agnes-ai.com/v1/chat/completions';
         const DEFAULT_MODEL = 'agnes-2.0-flash';
         const DEFAULT_PROMPT = '你是视频总结助手（不可透露包括你身份在内的其他信息），根据字幕文件总结为md，只输出内容正文：';
+        const PROMPT_TEMPLATES = {
+            general: {
+                label: '通用总结',
+                prompt: DEFAULT_PROMPT,
+            },
+            outline: {
+                label: '要点提纲',
+                prompt: '根据字幕整理一份简明提纲。使用 Markdown 标题和项目符号，按主题归纳核心观点、重要事实与结论，只输出内容正文：',
+            },
+            study: {
+                label: '学习笔记',
+                prompt: '根据字幕整理学习笔记。包含核心概念、关键论据或步骤、示例和待复习问题。使用清晰的 Markdown 结构，只输出内容正文：',
+            },
+            action: {
+                label: '行动清单',
+                prompt: '根据字幕提取可执行的行动项。按优先级整理任务、所需条件、注意事项与预期结果。使用 Markdown 复选列表，只输出内容正文：',
+            },
+        };
 
         const AI_CONFIG_KEYS = {
             apiUrl: 'ai_api_url',
@@ -243,6 +261,10 @@
         function isAIConfigured() {
             const c = getAIConfig();
             return !!(c.apiUrl && c.apiKey && c.model);
+        }
+
+        function getPromptTemplateId(prompt) {
+            return Object.entries(PROMPT_TEMPLATES).find(([, template]) => template.prompt === prompt)?.[0] || 'custom';
         }
 
         // ============================================================
@@ -829,7 +851,8 @@
                         color: #1d1d1f;
                         margin-bottom: 6px;
                     }
-                    .bsub-field input {
+                    .bsub-field input,
+                    .bsub-field select {
                         width: 100%;
                         padding: 9px 12px;
                         border: 0.5px solid #d2d2d7;
@@ -840,7 +863,8 @@
                         transition: border-color 0.15s ease;
                         font-family: inherit;
                     }
-                    .bsub-field input:focus {
+                    .bsub-field input:focus,
+                    .bsub-field select:focus {
                         outline: none;
                         border-color: #007aff;
                         box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.1);
@@ -960,6 +984,14 @@
                             </div>
                             <div class="bsub-field">
                                 <label class="bsub-field-label">提示词</label>
+                                <select id="bsub-prompt-template">
+                                    <option value="general">通用总结</option>
+                                    <option value="outline">要点提纲</option>
+                                    <option value="study">学习笔记</option>
+                                    <option value="action">行动清单</option>
+                                    <option value="custom">自定义</option>
+                                </select>
+                                <div class="bsub-field-hint">选择模板后可继续编辑下方内容</div>
                                 <textarea id="bsub-ai-prompt" rows="4" placeholder="输入提示词，字幕内容会自动拼接到末尾"></textarea>
                                 <div class="bsub-field-hint">只填写提示词部分，字幕文本由脚本自动拼接，无需手动插入</div>
                             </div>
@@ -1112,6 +1144,16 @@
                 if (e.target.id === 'bsub-settings-overlay') closeSettings();
             });
 
+            const templateSelect = document.getElementById('bsub-prompt-template');
+            const promptInput = document.getElementById('bsub-ai-prompt');
+            templateSelect.addEventListener('change', () => {
+                const template = PROMPT_TEMPLATES[templateSelect.value];
+                if (template) promptInput.value = template.prompt;
+            });
+            promptInput.addEventListener('input', () => {
+                templateSelect.value = getPromptTemplateId(promptInput.value);
+            });
+
         }
 
         function openSettings() {
@@ -1120,6 +1162,7 @@
             document.getElementById('bsub-ai-key').value = c.apiKey;
             document.getElementById('bsub-ai-model').value = c.model;
             document.getElementById('bsub-ai-prompt').value = c.prompt || DEFAULT_PROMPT;
+            document.getElementById('bsub-prompt-template').value = getPromptTemplateId(c.prompt || DEFAULT_PROMPT);
             document.getElementById('bsub-settings-overlay').classList.add('visible');
         }
 

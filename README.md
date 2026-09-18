@@ -8,7 +8,7 @@
     <a href="#常见问题">常见问题</a>
   </p>
 
-  <img alt="Version" src="https://img.shields.io/badge/version-4.3.4-00AEEC?style=flat-square">
+  <img alt="Version" src="https://img.shields.io/badge/version-4.4.0-00AEEC?style=flat-square">
   <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-7C3AED?style=flat-square">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Bilibili-FB7299?style=flat-square">
 
@@ -122,7 +122,7 @@ Agnes 提供免费的默认访问额度，单次视频总结通常对应一次�
 4. 阅读结果。
 5. 点击“字幕 xx 行”可复制原始字幕文本。
 
-齿轮图标用于修改 API、模型与提示词；刷新图标用于基于同一份字幕重新生成总结。
+齿轮图标用于修改 API、模型与提示词；刷新图标用于基于同一份字幕重新生成总结。设置窗口提供通用总结、要点提纲、学习笔记和行动清单四种提示词模板，选择后仍可继续编辑。
 
 <details>
   <summary><strong>提示词示例</strong></summary>
@@ -144,6 +144,7 @@ Agnes 提供免费的默认访问额度，单次视频总结通常对应一次�
 | 字幕复制 | 点击“字幕 xx 行”复制原始字幕文本。 |
 | AI 总结 | 根据字幕与提示词生成内容摘要。 |
 | 结果导出 | 支持复制总结内容，便于纳入笔记。 |
+| 提示词模板 | 提供通用总结、要点提纲、学习笔记和行动清单模板。 |
 | 自定义提示词 | 支持摘要、笔记、问答和行动清单等表达形式。 |
 | 页面切换适配 | 在 B 站站内切换视频后自动更新状态。 |
 | 配置保存 | API Key 与设置保存在脚本管理器的本地存储中。 |
@@ -179,7 +180,6 @@ Agnes 提供免费的默认访问额度，单次视频总结通常对应一次�
 - [ ] 时间戳章节导航：在总结中点击时间点跳转视频位置；
 - [ ] 总结历史记录：按视频缓存已生成的内容；
 - [ ] 深色模式与快捷键；
-- [ ] 常用提示词模板。
 
 ## 开发与反馈
 
