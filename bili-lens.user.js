@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/bilidanmu/BiliLens
-    // @version      4.6.0
+    // @version      4.7.0
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -208,6 +208,20 @@
             }
         }
 
+        function downloadSummaryAsMarkdown() {
+            if (!STATE.lastSummaryMd) return;
+            const videoKey = getCurrentVideoKey() || 'bili-lens-summary';
+            const blob = new Blob([STATE.lastSummaryMd], { type: 'text/markdown;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `${videoKey}-summary.md`;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            URL.revokeObjectURL(url);
+        }
+
         // ============================================================
         // AI 配置 — 密钥仅存储在油猴本地，不上传任何第三方
         // ============================================================
@@ -312,9 +326,11 @@
             STATE.lastSummaryMd = entry.summary;
             const contentEl = document.getElementById('bsub-content');
             const copyBtn = document.getElementById('bsub-copy-btn');
-            if (!contentEl || !copyBtn) return false;
+            const downloadBtn = document.getElementById('bsub-download-btn');
+            if (!contentEl || !copyBtn || !downloadBtn) return false;
             contentEl.innerHTML = renderMarkdown(entry.summary);
             copyBtn.style.display = 'inline-flex';
+            downloadBtn.style.display = 'inline-flex';
             updateUI();
             const statusText = document.getElementById('bsub-status-text');
             statusText.textContent = '已恢复本地总结';
@@ -350,6 +366,7 @@
             const contentEl = document.getElementById('bsub-content');
             const statusEl = document.getElementById('bsub-status-text');
             const copyBtn = document.getElementById('bsub-copy-btn');
+            const downloadBtn = document.getElementById('bsub-download-btn');
             const refreshBtn = document.getElementById('bsub-refresh');
 
             // 显示面板，旧内容保留到新内容到达后再替换
@@ -357,6 +374,7 @@
             statusEl.textContent = '生成中…';
             statusEl.style.color = '#86868b';
             copyBtn.style.display = 'none';
+            downloadBtn.style.display = 'none';
             if (refreshBtn) refreshBtn.classList.add('spinning');
 
             // 提示词 + 字幕文本拼接，字幕原文不暴露给用户
@@ -484,6 +502,7 @@
                 statusEl.textContent = '完成';
                 statusEl.style.color = '#34c759';
                 copyBtn.style.display = 'inline-flex';
+                downloadBtn.style.display = 'inline-flex';
                 // 生成完成后滚动到顶部
                 contentEl.scrollTop = 0;
                 console.debug('[BiliLens] AI总结完成，共', fullText.length, '字');
@@ -753,7 +772,8 @@
                     }
                     #bsub-gear:hover { opacity: 0.8; }
                     #bsub-gear svg { width: 16px; height: 16px; }
-                    #bsub-copy-btn {
+                    #bsub-copy-btn,
+                    #bsub-download-btn {
                         display: none;
                         padding: 4px 10px;
                         border: 0.5px solid rgba(0, 0, 0, 0.1);
@@ -765,7 +785,8 @@
                         cursor: pointer;
                         transition: all 0.15s ease;
                     }
-                    #bsub-copy-btn:hover {
+                    #bsub-copy-btn:hover,
+                    #bsub-download-btn:hover {
                         background: rgba(0, 122, 255, 0.08);
                     }
                     #bsub-close {
@@ -1003,6 +1024,7 @@
                                 </svg>
                             </div>
                             <button id="bsub-copy-btn">复制</button>
+                            <button id="bsub-download-btn">下载</button>
                             <div id="bsub-gear" title="AI设置">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                     <circle cx="12" cy="12" r="3"></circle>
@@ -1180,6 +1202,12 @@
                 if (!text) return;
                 copyToClipboard(text);
                 showToast('已复制');
+            });
+
+            document.getElementById('bsub-download-btn').addEventListener('click', () => {
+                if (!STATE.lastSummaryMd) return;
+                downloadSummaryAsMarkdown();
+                showToast('已下载 Markdown 文件');
             });
 
             // 点击“字幕 xx 行”复制原始字幕文本。
@@ -1410,6 +1438,8 @@
                 if (content) content.textContent = '';
                 const copyBtn = document.getElementById('bsub-copy-btn');
                 if (copyBtn) copyBtn.style.display = 'none';
+                const downloadBtn = document.getElementById('bsub-download-btn');
+                if (downloadBtn) downloadBtn.style.display = 'none';
                 updateUI();
                 restoreSummaryFromHistory();
                 // 重新植入入口按钮到新的工具栏
