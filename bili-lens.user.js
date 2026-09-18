@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/bilidanmu/BiliLens
-    // @version      4.13.0
+    // @version      4.14.0
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -220,34 +220,20 @@
             return body.map(item => item?.content || '').join('\n');
         }
 
-        const TIMESTAMP_SAMPLE_INTERVAL = 15;
         const CHAPTER_PROMPT = '请在总结末尾增加“关键节点”小节，选取 3 至 8 个重要片段，每行使用“- [MM:SS] 节点说明”的格式。时间点必须取自字幕行首已有的时间标记。';
 
         function subtitleToPromptText(json) {
             const body = json?.body || [];
-            const groups = [];
-
-            for (const item of body) {
-                const content = item?.content?.trim();
-                if (!content) continue;
-                const startTime = Number(item?.from);
-                if (!Number.isFinite(startTime) || startTime < 0) {
-                    if (groups.length) groups[groups.length - 1].contents.push(content);
-                    else groups.push({ startTime: 0, bucket: 0, contents: [content] });
-                    continue;
-                }
-
-                const bucket = Math.floor(startTime / TIMESTAMP_SAMPLE_INTERVAL);
-                const current = groups[groups.length - 1];
-                if (!current || current.bucket !== bucket) {
-                    groups.push({ startTime, bucket, contents: [content] });
-                } else {
-                    current.contents.push(content);
-                }
-            }
-
-            return groups
-                .map(group => `[${formatTimestamp(group.startTime)}] ${group.contents.join(' ')}`)
+            return body
+                .map(item => {
+                    const content = item?.content?.trim();
+                    if (!content) return '';
+                    const startTime = Number(item?.from);
+                    return Number.isFinite(startTime) && startTime >= 0
+                        ? `[${formatTimestamp(startTime)}] ${content}`
+                        : content;
+                })
+                .filter(Boolean)
                 .join('\n');
         }
 
