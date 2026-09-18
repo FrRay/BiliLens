@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/bilidanmu/BiliLens
-    // @version      4.4.0
+    // @version      4.5.0
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -1156,6 +1156,34 @@
 
         }
 
+        function isEditableElement(element) {
+            return element instanceof HTMLElement && (
+                element.matches('input, textarea, select, [contenteditable="true"]') ||
+                element.isContentEditable
+            );
+        }
+
+        function bindKeyboardShortcuts() {
+            window.addEventListener('keydown', (event) => {
+                if (event.repeat || isEditableElement(event.target)) return;
+
+                if (event.altKey && event.shiftKey && event.code === 'KeyA') {
+                    const dot = document.getElementById('bsub-dot');
+                    if (!STATE.dotInserted || !dot) return;
+                    event.preventDefault();
+                    dot.click();
+                    return;
+                }
+
+                if (event.key === 'Escape') {
+                    const panel = document.getElementById('bsub-panel');
+                    if (!panel?.classList.contains('visible')) return;
+                    event.preventDefault();
+                    panel.classList.remove('visible');
+                }
+            });
+        }
+
         function openSettings() {
             const c = getAIConfig();
             document.getElementById('bsub-ai-url').value = c.apiUrl;
@@ -1282,6 +1310,7 @@
         // ============================================================
 
         createUI();
+        bindKeyboardShortcuts();
 
         // ============================================================
         // SPA 路由监听 — B 站切视频时自动重置状态、重新植入按钮
