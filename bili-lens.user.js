@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/bilidanmu/BiliLens
-    // @version      4.10.1
+    // @version      4.11.0
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -343,6 +343,15 @@
             GM_setValue(SUMMARY_HISTORY_KEY, history.slice(0, SUMMARY_HISTORY_LIMIT));
         }
 
+        function removeSummaryFromHistory(videoKey = getCurrentVideoKey()) {
+            if (!videoKey) return false;
+            const history = getSummaryHistory();
+            const nextHistory = history.filter(item => item?.videoKey !== videoKey);
+            if (nextHistory.length === history.length) return false;
+            GM_setValue(SUMMARY_HISTORY_KEY, nextHistory);
+            return true;
+        }
+
         function restoreSummaryFromHistory() {
             const videoKey = getCurrentVideoKey();
             if (!videoKey) return false;
@@ -354,10 +363,12 @@
             const contentEl = document.getElementById('bsub-content');
             const copyBtn = document.getElementById('bsub-copy-btn');
             const downloadBtn = document.getElementById('bsub-download-btn');
-            if (!contentEl || !copyBtn || !downloadBtn) return false;
+            const clearBtn = document.getElementById('bsub-clear-btn');
+            if (!contentEl || !copyBtn || !downloadBtn || !clearBtn) return false;
             contentEl.innerHTML = renderMarkdown(entry.summary);
             copyBtn.style.display = 'inline-flex';
             downloadBtn.style.display = 'inline-flex';
+            clearBtn.style.display = 'inline-flex';
             updateUI();
             const statusText = document.getElementById('bsub-status-text');
             statusText.textContent = '已恢复本地总结';
@@ -394,6 +405,7 @@
             const statusEl = document.getElementById('bsub-status-text');
             const copyBtn = document.getElementById('bsub-copy-btn');
             const downloadBtn = document.getElementById('bsub-download-btn');
+            const clearBtn = document.getElementById('bsub-clear-btn');
             const refreshBtn = document.getElementById('bsub-refresh');
 
             // 显示面板，旧内容保留到新内容到达后再替换
@@ -402,6 +414,7 @@
             statusEl.style.color = '#86868b';
             copyBtn.style.display = 'none';
             downloadBtn.style.display = 'none';
+            clearBtn.style.display = 'none';
             if (refreshBtn) refreshBtn.classList.add('spinning');
 
             // 提示词 + 字幕文本拼接，字幕原文不暴露给用户
@@ -530,6 +543,7 @@
                 statusEl.style.color = '#34c759';
                 copyBtn.style.display = 'inline-flex';
                 downloadBtn.style.display = 'inline-flex';
+                clearBtn.style.display = 'inline-flex';
                 // 生成完成后滚动到顶部
                 contentEl.scrollTop = 0;
                 console.debug('[BiliLens] AI总结完成，共', fullText.length, '字');
@@ -824,7 +838,8 @@
                     #bsub-gear:hover { opacity: 0.8; }
                     #bsub-gear svg { width: 16px; height: 16px; }
                     #bsub-copy-btn,
-                    #bsub-download-btn {
+                    #bsub-download-btn,
+                    #bsub-clear-btn {
                         display: none;
                         padding: 4px 10px;
                         border: 0.5px solid rgba(0, 0, 0, 0.1);
@@ -837,7 +852,8 @@
                         transition: all 0.15s ease;
                     }
                     #bsub-copy-btn:hover,
-                    #bsub-download-btn:hover {
+                    #bsub-download-btn:hover,
+                    #bsub-clear-btn:hover {
                         background: rgba(0, 122, 255, 0.08);
                     }
                     #bsub-close {
@@ -1091,7 +1107,8 @@
                             background: rgba(10, 132, 255, 0.32);
                         }
                         #bsub-copy-btn,
-                        #bsub-download-btn {
+                        #bsub-download-btn,
+                        #bsub-clear-btn {
                             background: rgba(255, 255, 255, 0.12);
                             border-color: rgba(255, 255, 255, 0.14);
                         }
@@ -1150,6 +1167,7 @@
                             </div>
                             <button id="bsub-copy-btn">复制</button>
                             <button id="bsub-download-btn">下载</button>
+                            <button id="bsub-clear-btn" title="清除本视频的本地总结">清除</button>
                             <div id="bsub-gear" title="AI设置">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                     <circle cx="12" cy="12" r="3"></circle>
@@ -1369,6 +1387,17 @@
                 if (!STATE.lastSummaryMd) return;
                 downloadSummaryAsMarkdown();
                 showToast('已下载 Markdown 文件');
+            });
+
+            document.getElementById('bsub-clear-btn').addEventListener('click', () => {
+                if (!STATE.lastSummaryMd || !removeSummaryFromHistory()) return;
+                STATE.lastSummaryMd = '';
+                document.getElementById('bsub-content').textContent = '';
+                document.getElementById('bsub-copy-btn').style.display = 'none';
+                document.getElementById('bsub-download-btn').style.display = 'none';
+                document.getElementById('bsub-clear-btn').style.display = 'none';
+                updateUI();
+                showToast('已清除本视频的本地总结');
             });
 
             document.getElementById('bsub-content').addEventListener('click', (event) => {
@@ -1622,6 +1651,8 @@
                 if (copyBtn) copyBtn.style.display = 'none';
                 const downloadBtn = document.getElementById('bsub-download-btn');
                 if (downloadBtn) downloadBtn.style.display = 'none';
+                const clearBtn = document.getElementById('bsub-clear-btn');
+                if (clearBtn) clearBtn.style.display = 'none';
                 updateUI();
                 restoreSummaryFromHistory();
                 // 重新植入入口按钮到新的工具栏
