@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/bilidanmu/BiliLens
-    // @version      4.14.0
+    // @version      4.14.1
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -30,6 +30,7 @@
             lastSummaryMd: '',  // 供复制
             isFetchingSubtitle: false,
             subtitleFetchFailed: false,
+            subtitleCopyResetTimer: null,
             // SPA 切换时清理轮询的句柄
             activePolls: new Set(),
         };
@@ -1488,11 +1489,20 @@
             });
 
             // 点击“字幕 xx 行”复制原始字幕文本。
-            document.getElementById('bsub-line-count').addEventListener('click', () => {
-                if (!document.getElementById('bsub-line-count').classList.contains('copyable')) return;
+            document.getElementById('bsub-line-count').addEventListener('click', (event) => {
+                const lineCountEl = event.currentTarget;
+                if (!lineCountEl.classList.contains('copyable')) return;
                 const subtitleText = subtitleToTxt(getFirstSubtitle());
                 if (!subtitleText) return;
                 copyToClipboard(subtitleText);
+                lineCountEl.textContent = '已复制';
+                clearTimeout(STATE.subtitleCopyResetTimer);
+                STATE.subtitleCopyResetTimer = setTimeout(() => {
+                    STATE.subtitleCopyResetTimer = null;
+                    if (STATE.interceptedSubtitles.length > 0 && lineCountEl.textContent === '已复制') {
+                        lineCountEl.textContent = `字幕 ${getSubtitleLineCount()} 行`;
+                    }
+                }, 2000);
                 showToast('字幕已复制');
             });
 
@@ -1701,6 +1711,8 @@
             STATE.summaryRequest = null;
             STATE.isGenerating = false;
             document.getElementById('bsub-refresh')?.classList.remove('spinning');
+            clearTimeout(STATE.subtitleCopyResetTimer);
+            STATE.subtitleCopyResetTimer = null;
 
             // 清理所有未完成的轮询
             for (const id of STATE.activePolls) {
