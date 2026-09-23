@@ -8,7 +8,7 @@
     <a href="#常见问题">常见问题</a>
   </p>
 
-  <img alt="Version" src="https://img.shields.io/badge/version-4.8.0-00AEEC?style=flat-square">
+  <img alt="Version" src="https://img.shields.io/badge/version-4.14.4-00AEEC?style=flat-square">
   <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-7C3AED?style=flat-square">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Bilibili-FB7299?style=flat-square">
 
@@ -151,6 +151,7 @@ Agnes 提供免费的默认访问额度，单次视频总结通常对应一次�
 | 字幕优先级 | 可选择 AI 中文字幕、任意 AI 字幕、原始字幕或任意可用字幕作为优先来源。 |
 | 字幕复制 | 点击“字幕 xx 行”复制原始字幕文本。 |
 | AI 总结 | 根据字幕与提示词生成内容摘要；生成中断时保留已经返回的内容。 |
+| Markdown 渲染 | 支持标题、列表、引用、代码块、表格、加粗与斜体等常用结构。 |
 | 结果导出 | 支持复制总结内容或下载 Markdown 文件。 |
 | 提示词模板 | 提供通用总结、要点提纲、学习笔记、行动清单和视频叙事模板。 |
 | 键盘快捷键 | 支持快速打开总结面板与收起面板。 |

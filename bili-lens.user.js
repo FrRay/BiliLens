@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/FrRay/BiliLens
-    // @version      4.14.3
+    // @version      4.14.4
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -662,7 +662,7 @@
         }
 
         // ============================================================
-        // Markdown 渲染器 — 零依赖，支持标题/列表/引用/代码块/加粗斜体
+        // Markdown 渲染器 — 零依赖，支持标题/列表/引用/表格/代码块/加粗斜体
         // ============================================================
 
         function renderMarkdown(md) {
@@ -682,9 +682,10 @@
             // 3. 行内代码
             text = text.replace(/`([^`]+)`/g, '<code class="bsub-md-inline-code">$1</code>');
 
-            // 4. 逐行解析：标题 / 列表 / 引用 / 分割线
+            // 4. 逐行解析：标题 / 列表 / 引用 / 表格 / 分割线
             const lines = text.split('\n');
             const out = [];
+            const tableBlocks = [];
             let inUl = false;
             let inOl = false;
 
@@ -693,7 +694,62 @@
                 if (inOl) { out.push('</ol>'); inOl = false; }
             }
 
-            for (let line of lines) {
+            function splitTableRow(line) {
+                const trimmed = line.trim();
+                if (!trimmed.includes('|')) return null;
+                const row = trimmed.replace(/^\|/, '').replace(/\|$/, '')
+                    .split('|').map(cell => cell.trim());
+                return row.length ? row : null;
+            }
+
+            function tableAlignment(cell) {
+                const token = cell.trim();
+                if (!/^:?-{3,}:?$/.test(token)) return null;
+                if (token.startsWith(':') && token.endsWith(':')) return 'center';
+                if (token.startsWith(':')) return 'left';
+                if (token.endsWith(':')) return 'right';
+                return '';
+            }
+
+            function buildTable(header, alignments, rows) {
+                const cellHtml = (tag, cell, index) => {
+                    const align = alignments[index];
+                    const attr = align ? ' style="text-align:' + align + '"' : '';
+                    return '<' + tag + attr + '>' + (cell || '') + '</' + tag + '>';
+                };
+                const headHtml = '<thead><tr>' + header.map((cell, index) => cellHtml('th', cell, index)).join('') + '</tr></thead>';
+                const bodyHtml = rows.length
+                    ? '<tbody>' + rows.map(row => '<tr>' + header.map((_, index) => cellHtml('td', row[index], index)).join('') + '</tr>').join('') + '</tbody>'
+                    : '';
+                return '<table class="bsub-md-table">' + headHtml + bodyHtml + '</table>';
+            }
+
+            for (let i = 0; i < lines.length; i++) {
+                let line = lines[i];
+
+                // 表格：表头下一行必须是 Markdown 分隔行，避免误识别普通文本。
+                const headerCells = splitTableRow(line);
+                const dividerCells = i + 1 < lines.length ? splitTableRow(lines[i + 1]) : null;
+                if (headerCells && headerCells.length >= 2 && dividerCells && dividerCells.length === headerCells.length) {
+                    const alignments = dividerCells.map(tableAlignment);
+                    if (alignments.every(alignment => alignment !== null)) {
+                        const rows = [];
+                        let next = i + 2;
+                        while (next < lines.length) {
+                            const row = splitTableRow(lines[next]);
+                            if (!row) break;
+                            rows.push(row);
+                            next++;
+                        }
+                        closeLists();
+                        const tableIndex = tableBlocks.length;
+                        tableBlocks.push(buildTable(headerCells, alignments, rows));
+                        out.push('\u0000TABLE' + tableIndex + '\u0000');
+                        i = next - 1;
+                        continue;
+                    }
+                }
+
                 // 标题
                 let m = line.match(/^(#{1,6})\s+(.+)$/);
                 if (m) {
@@ -744,6 +800,9 @@
             closeLists();
 
             text = out.join('\n');
+
+            // 先还原表格，再统一处理单元格中的加粗、斜体和时间点。
+            text = text.replace(/\u0000TABLE(\d+)\u0000/g, (_, i) => tableBlocks[parseInt(i)]);
 
             // 5. 行内格式：加粗、斜体
             text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
@@ -1005,6 +1064,23 @@
                         font-family: "SF Mono", "Fira Code", monospace;
                         line-height: 1.5;
                     }
+                    #bsub-content .bsub-md-table {
+                        width: 100%;
+                        border-collapse: collapse;
+                        margin: 10px 0;
+                        font-size: 13px;
+                    }
+                    #bsub-content .bsub-md-table th,
+                    #bsub-content .bsub-md-table td {
+                        border: 1px solid rgba(0,0,0,0.12);
+                        padding: 6px 8px;
+                        vertical-align: top;
+                        text-align: left;
+                    }
+                    #bsub-content .bsub-md-table th {
+                        background: rgba(0,0,0,0.05);
+                        font-weight: 600;
+                    }
                     #bsub-content strong { font-weight: 600; }
                     #bsub-content em { font-style: italic; }
                     #bsub-content .bsub-timestamp {
@@ -1175,6 +1251,13 @@
                         #bsub-content .bsub-md-inline-code,
                         #bsub-content .bsub-md-code {
                             background: rgba(255, 255, 255, 0.1);
+                        }
+                        #bsub-content .bsub-md-table th,
+                        #bsub-content .bsub-md-table td {
+                            border-color: rgba(255,255,255,0.16);
+                        }
+                        #bsub-content .bsub-md-table th {
+                            background: rgba(255,255,255,0.08);
                         }
                         #bsub-content .bsub-timestamp {
                             background: rgba(10, 132, 255, 0.2);
