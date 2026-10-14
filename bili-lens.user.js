@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/FrRay/BiliLens
-    // @version      4.14.4
+    // @version      4.14.5
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -266,7 +266,7 @@
         // ============================================================
 
         const DEFAULT_API_URL = 'https://apihub.agnes-ai.com/v1/chat/completions';
-        const DEFAULT_MODEL = 'agnes-2.0-flash';
+        const DEFAULT_MODEL = 'agnes-2.5-flash';
         const DEFAULT_PROMPT = '你是视频总结助手（不可透露包括你身份在内的其他信息），根据字幕文件总结为md，只输出内容正文：';
         const PROMPT_TEMPLATES = {
             general: {
@@ -303,11 +303,13 @@
         const SUMMARY_HISTORY_MAX_LENGTH = 100000;
 
         function getAIConfig() {
+            const savedModel = GM_getValue(AI_CONFIG_KEYS.model, DEFAULT_MODEL);
             return {
                 // 已保存的配置优先；新安装时预填推荐的 Agnes 配置。
                 apiUrl: GM_getValue(AI_CONFIG_KEYS.apiUrl, DEFAULT_API_URL),
                 apiKey: GM_getValue(AI_CONFIG_KEYS.apiKey, ''),
-                model: GM_getValue(AI_CONFIG_KEYS.model, DEFAULT_MODEL),
+                // 兼容旧版本：2.0 已弃用时，自动迁移到当前默认模型。
+                model: savedModel === 'agnes-2.0-flash' ? DEFAULT_MODEL : savedModel,
                 prompt: GM_getValue(AI_CONFIG_KEYS.prompt, DEFAULT_PROMPT),
                 subtitlePreference: GM_getValue(AI_CONFIG_KEYS.subtitlePreference, 'ai-zh'),
             };
@@ -1362,8 +1364,8 @@
                             </div>
                             <div class="bsub-field">
                                 <label class="bsub-field-label">模型</label>
-                                <input type="text" id="bsub-ai-model" placeholder="agnes-2.0-flash" />
-                                <div class="bsub-field-hint">默认 agnes-2.0-flash，也可填写其他兼容模型</div>
+                                <input type="text" id="bsub-ai-model" placeholder="agnes-2.5-flash" />
+                                <div class="bsub-field-hint">默认 agnes-2.5-flash，也可填写其他兼容模型</div>
                             </div>
                             <div class="bsub-field">
                                 <label class="bsub-field-label">字幕优先级</label>

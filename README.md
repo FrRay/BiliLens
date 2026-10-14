@@ -8,7 +8,7 @@
     <a href="#常见问题">常见问题</a>
   </p>
 
-  <img alt="Version" src="https://img.shields.io/badge/version-4.14.4-00AEEC?style=flat-square">
+  <img alt="Version" src="https://img.shields.io/badge/version-4.14.5-00AEEC?style=flat-square">
   <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-7C3AED?style=flat-square">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Bilibili-FB7299?style=flat-square">
 
@@ -95,16 +95,16 @@ BiliLens 是面向 B 站播放页的用户脚本，为具有可用字幕的视�
 | --- | --- |
 | API URL | `https://apihub.agnes-ai.com/v1/chat/completions` |
 | API Key | 你的 Agnes API Key |
-| 模型 | `agnes-2.0-flash` |
+| 模型 | `agnes-2.5-flash` |
 | 提示词 | 保持默认，或按自己的习惯改成“列出行动清单”“整理成课程笔记”等。 |
 
 <p align="center">
   <img src="./assets/bili-lens-demo-pic2.png" alt="Agnes API 配置示例" width="720">
   <br>
-  <em>Agnes API 配置示例</em>
+  <em>Agnes API 配置示例（模型名称以当前脚本默认值为准）</em>
 </p>
 
-保存后，配置将保存在脚本管理器的本地存储中，离线存储。BiliLens 支持兼容 OpenAI Chat Completions 格式的模型服务；本 README 以 免费 的 `agnes-2.0-flash` 作为推荐 AI。
+保存后，配置将保存在脚本管理器的本地存储中，离线存储。BiliLens 支持兼容 OpenAI Chat Completions 格式的模型服务；本 README 以免费的 `agnes-2.5-flash` 作为推荐 AI。
 
 ### 推荐 Agnes 的原因
 
