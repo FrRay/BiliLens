@@ -8,7 +8,7 @@
     <a href="#常见问题">常见问题</a>
   </p>
 
-  <img alt="Version" src="https://img.shields.io/badge/version-4.14.11-00AEEC?style=flat-square">
+  <img alt="Version" src="https://img.shields.io/badge/version-4.14.12-00AEEC?style=flat-square">
   <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-7C3AED?style=flat-square">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Bilibili-FB7299?style=flat-square">
 
@@ -127,6 +127,8 @@ Agnes 提供免费的默认访问额度，单次视频总结通常对应一次�
 
 拖动总结面板顶部可以移动面板，拖动面板边缘可以调整宽度和高度。调整后的位置和尺寸会保存在本地。
 
+点击面板顶部的历史图标，可以查看最近保存的总结并打开对应的视频。
+
 | 快捷键 | 操作 |
 | --- | --- |
 | `Alt + Shift + A` | 打开或触发「AI 总结」。 |
@@ -157,7 +159,7 @@ Agnes 提供免费的默认访问额度，单次视频总结通常对应一次�
 | 结果导出 | 支持复制总结内容或下载 Markdown 文件。 |
 | 提示词模板 | 提供通用总结、要点提纲、学习笔记、行动清单和视频叙事模板。 |
 | 键盘快捷键 | 支持快速打开总结面板与收起面板。 |
-| 本地总结历史 | 按视频保存最近 20 条总结；再次打开时可直接查看或清除已保存内容。 |
+| 本地总结历史 | 按视频保存最近 20 条总结，可从面板查看并打开对应视频。 |
 | 深色模式 | 跟随系统深色偏好调整总结面板与设置窗口。 |
 | 关键节点跳转 | 总结会列出重要片段；点击 `[MM:SS]` 或 `[HH:MM:SS]` 可跳转至视频对应位置。 |
 | 自定义提示词 | 支持摘要、笔记、问答、行动清单和叙事分析等表达形式。 |

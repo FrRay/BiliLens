@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/FrRay/BiliLens
-    // @version      4.14.11
+    // @version      4.14.12
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -370,6 +370,60 @@
             } catch (e) {
                 return [];
             }
+        }
+
+        function historyVideoUrl(videoKey) {
+            if (typeof videoKey !== 'string') return null;
+            const match = videoKey.match(/^(BV[0-9a-z]+|ep\d+|ss\d+)(?:-p(\d+))?$/i);
+            if (!match) return null;
+            const path = /^BV/i.test(match[1]) ? '/video/' : '/bangumi/play/';
+            return path + match[1] + (match[2] ? '?p=' + match[2] : '');
+        }
+
+        function setHistoryVisible(visible) {
+            const panel = document.getElementById('bsub-panel');
+            const list = document.getElementById('bsub-history');
+            const button = document.getElementById('bsub-history-btn');
+            if (!panel || !list || !button) return;
+            panel.classList.toggle('bsub-show-history', visible);
+            button.setAttribute('aria-expanded', String(visible));
+            list.style.display = visible ? 'block' : 'none';
+            if (!visible) return;
+
+            list.style.top = document.getElementById('bsub-bar').offsetHeight + 'px';
+            list.replaceChildren();
+            const entries = getSummaryHistory().slice(0, SUMMARY_HISTORY_LIMIT)
+                .map(entry => ({ entry, url: historyVideoUrl(entry?.videoKey) }))
+                .filter(item => item.url && typeof item.entry.summary === 'string');
+            if (!entries.length) {
+                const empty = document.createElement('div');
+                empty.className = 'bsub-history-empty';
+                empty.textContent = '暂无本地总结';
+                list.appendChild(empty);
+                return;
+            }
+            entries.forEach(({ entry, url }) => {
+                const link = document.createElement('a');
+                link.className = 'bsub-history-item';
+                link.href = url;
+                const title = document.createElement('span');
+                title.className = 'bsub-history-title';
+                title.textContent = typeof entry.title === 'string' && entry.title.trim() ? entry.title : entry.videoKey;
+                const date = document.createElement('span');
+                date.className = 'bsub-history-date';
+                const time = new Date(entry.updatedAt);
+                date.textContent = Number.isFinite(time.getTime())
+                    ? time.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+                    : '';
+                link.append(title, date);
+                link.addEventListener('click', event => {
+                    if (entry.videoKey !== getCurrentVideoKey() || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+                    event.preventDefault();
+                    setHistoryVisible(false);
+                    if (!STATE.isGenerating) restoreSummaryFromHistory();
+                });
+                list.appendChild(link);
+            });
         }
 
         function saveSummaryToHistory(summary, videoKey = getCurrentVideoKey(), title = document.title) {
@@ -986,6 +1040,21 @@
                         color: #86868b;
                         font-weight: 400;
                     }
+                    #bsub-history-btn {
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        width: 20px;
+                        height: 20px;
+                        padding: 0;
+                        border: 0;
+                        background: transparent;
+                        color: inherit;
+                        cursor: pointer;
+                    }
+                    #bsub-history-btn:hover,
+                    #bsub-history-btn[aria-expanded="true"] { color: #007aff; }
+                    #bsub-history-btn svg { width: 16px; height: 16px; }
                     #bsub-bar-info .dot-sep {
                         width: 3px;
                         height: 3px;
@@ -1082,6 +1151,34 @@
                         min-height: 0;
                         max-height: none;
                     }
+                    #bsub-panel.bsub-show-history:not(.bsub-height-adjusted) #bsub-content {
+                        min-height: 260px;
+                    }
+                    #bsub-history {
+                        display: none;
+                        position: absolute;
+                        z-index: 1;
+                        right: 0;
+                        bottom: 0;
+                        left: 0;
+                        overflow-y: auto;
+                        overscroll-behavior-y: contain;
+                        padding: 8px 12px;
+                        background: rgba(255, 255, 255, 0.96);
+                    }
+                    .bsub-history-item {
+                        display: flex;
+                        flex-direction: column;
+                        gap: 3px;
+                        padding: 9px 8px;
+                        border-radius: 6px;
+                        color: #1d1d1f;
+                        text-decoration: none;
+                    }
+                    .bsub-history-item:hover { background: rgba(0, 122, 255, 0.08); }
+                    .bsub-history-title { font-size: 13px; overflow-wrap: anywhere; }
+                    .bsub-history-date, .bsub-history-empty { color: #86868b; font-size: 12px; }
+                    .bsub-history-empty { padding: 16px 8px; }
                     /* Markdown 排版 */
                     #bsub-content .bsub-md-h1, #bsub-content .bsub-md-h2, #bsub-content .bsub-md-h3,
                     #bsub-content .bsub-md-h4, #bsub-content .bsub-md-h5, #bsub-content .bsub-md-h6 {
@@ -1314,6 +1411,8 @@
                         #bsub-content {
                             color: #f5f5f7;
                         }
+                        #bsub-history { background: rgba(30, 30, 32, 0.97); }
+                        .bsub-history-item { color: #f5f5f7; }
                         #bsub-content .bsub-md-quote {
                             color: #aeaeb2;
                         }
@@ -1387,6 +1486,9 @@
                     <button class="bsub-resize bsub-resize-bottom" data-edge="bottom" type="button" title="拖动调整面板高度" aria-label="调整下边缘，使用上下方向键"></button>
                     <div id="bsub-bar">
                         <div id="bsub-bar-info">
+                            <button id="bsub-history-btn" type="button" title="本地总结历史" aria-label="本地总结历史" aria-expanded="false" aria-controls="bsub-history">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></svg>
+                            </button>
                             <span id="bsub-line-count">—</span>
                             <span class="dot-sep"></span>
                             <span id="bsub-status-text">就绪</span>
@@ -1415,6 +1517,7 @@
                         </div>
                     </div>
                     <div id="bsub-content"></div>
+                    <div id="bsub-history" aria-label="本地总结历史"></div>
                 </div>
 
                 <!-- 设置弹窗 -->
@@ -1626,7 +1729,7 @@
             const panelBar = document.getElementById('bsub-bar');
             let dragStart = null;
             panelBar.addEventListener('pointerdown', event => {
-                if (!event.isPrimary || event.button !== 0 || event.target.closest('#bsub-line-count, #bsub-bar-actions')) return;
+                if (!event.isPrimary || event.button !== 0 || event.target.closest('#bsub-history-btn, #bsub-line-count, #bsub-bar-actions')) return;
                 event.preventDefault();
                 const rect = panel.getBoundingClientRect();
                 dragStart = { x: event.clientX, y: event.clientY, left: rect.left, top: rect.top, moved: false };
@@ -1650,6 +1753,10 @@
             panelBar.addEventListener('pointercancel', () => { dragStart = null; });
             window.addEventListener('resize', () => {
                 if (panel.classList.contains('visible')) restorePanelPosition(panel);
+            });
+
+            document.getElementById('bsub-history-btn').addEventListener('click', () => {
+                setHistoryVisible(!panel.classList.contains('bsub-show-history'));
             });
 
             // 入口按钮：点击展开面板 / 触发总结流程
@@ -1983,6 +2090,7 @@
             if (window.location.href === lastUrl) return;
             lastUrl = window.location.href;
             console.debug('[BiliLens] SPA 路由切换:', lastUrl);
+            setHistoryVisible(false);
 
             STATE.summaryRequest?.controller.abort();
             STATE.summaryRequest = null;
