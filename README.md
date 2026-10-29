@@ -8,7 +8,7 @@
     <a href="#常见问题">常见问题</a>
   </p>
 
-  <img alt="Version" src="https://img.shields.io/badge/version-4.14.12-00AEEC?style=flat-square">
+  <img alt="Version" src="https://img.shields.io/badge/version-5.0.0-00AEEC?style=flat-square">
   <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-7C3AED?style=flat-square">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Bilibili-FB7299?style=flat-square">
 
@@ -36,6 +36,15 @@ BiliLens 是面向 B 站播放页的用户脚本，为具有可用字幕的视�
 
 > [!NOTE]
 > 字幕是生成总结的基础。视频未提供可用字幕时，面板将显示“获取字幕 0 行”。
+
+## 5.0.0 更新公告
+
+【新增】本地总结历史入口，可查看最近保存的视频总结并打开对应视频<br>
+【新增】总结面板支持拖动四边调整宽度和高度，并记住调整后的尺寸<br>
+【新增】支持拖动面板顶部移动位置，切换视频后保留面板位置<br>
+【优化】生成总结时可以自由滚动查看前文，回到底部后继续跟随新内容<br>
+【优化】总结面板滚动到顶部或底部时，继续滚动不会带动视频页面<br>
+【修复】总结生成完成后，面板强制跳回内容开头的问题
 
 ## 快速开始
 
