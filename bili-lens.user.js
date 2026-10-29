@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/FrRay/BiliLens
-    // @version      4.14.6
+    // @version      4.14.7
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -1015,6 +1015,7 @@
                     #bsub-content {
                         padding: 16px 20px;
                         overflow-y: auto;
+                        overscroll-behavior-y: contain;
                         flex: 1;
                         font-size: 14px;
                         line-height: 1.75;
