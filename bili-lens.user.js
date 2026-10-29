@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/FrRay/BiliLens
-    // @version      4.14.10
+    // @version      4.14.11
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -303,6 +303,26 @@
         const SUMMARY_HISTORY_MAX_LENGTH = 100000;
         const PANEL_WIDTH_KEY = 'panel_width';
         const PANEL_HEIGHT_KEY = 'panel_height';
+        const PANEL_POSITION_KEY = 'panel_position';
+
+        function restorePanelPosition(panel) {
+            const position = GM_getValue(PANEL_POSITION_KEY, null);
+            if (!position || !Number.isFinite(position.left) || !Number.isFinite(position.top)) return;
+            panel.style.left = Math.max(0, Math.min(position.left, window.innerWidth - panel.offsetWidth)) + 'px';
+            panel.style.top = Math.max(0, Math.min(position.top, window.innerHeight - panel.offsetHeight)) + 'px';
+            panel.style.right = 'auto';
+            panel.style.bottom = 'auto';
+        }
+
+        function showSummaryPanel(panel) {
+            panel.classList.add('visible');
+            restorePanelPosition(panel);
+        }
+
+        function savePanelPosition(panel) {
+            const rect = panel.getBoundingClientRect();
+            GM_setValue(PANEL_POSITION_KEY, { left: rect.left, top: rect.top });
+        }
 
         function getAIConfig() {
             const savedModel = GM_getValue(AI_CONFIG_KEYS.model, DEFAULT_MODEL);
@@ -534,7 +554,7 @@
 
             STATE.isGenerating = true;
             STATE.summaryRequest = { id: requestId, controller };
-            panel.classList.add('visible');
+            showSummaryPanel(panel);
             statusEl.textContent = '生成中…';
             statusEl.style.color = '#86868b';
             setSummaryActionsVisible(false);
@@ -944,29 +964,7 @@
                     }
                     .bsub-resize-top { top: 0; }
                     .bsub-resize-bottom { bottom: 0; }
-                    .bsub-resize::after {
-                        content: '';
-                        position: absolute;
-                        border-radius: 3px;
-                        background: #86868b;
-                        opacity: 0.4;
-                    }
-                    .bsub-resize-left::after, .bsub-resize-right::after {
-                        left: 3px;
-                        top: 50%;
-                        width: 3px;
-                        height: 32px;
-                        transform: translateY(-50%);
-                    }
-                    .bsub-resize-top::after, .bsub-resize-bottom::after {
-                        top: 3px;
-                        left: 50%;
-                        width: 32px;
-                        height: 3px;
-                        transform: translateX(-50%);
-                    }
-                    .bsub-resize:hover::after,
-                    .bsub-resize:focus-visible::after { opacity: 0.85; }
+                    .bsub-resize:focus-visible { outline: 2px solid #007aff; outline-offset: -2px; }
 
                     /* 状态栏 */
                     #bsub-bar {
@@ -1604,6 +1602,7 @@
                     if (!start || !handle.hasPointerCapture(event.pointerId)) return;
                     const size = resizePanel(edge, start.rect, (horizontal ? event.clientX : event.clientY) - start.coordinate);
                     savePanelSize(edge, size);
+                    savePanelPosition(panel);
                     start = null;
                 });
                 handle.addEventListener('pointercancel', () => {
@@ -1619,6 +1618,7 @@
                     event.preventDefault();
                     const size = resizePanel(edge, panel.getBoundingClientRect(), event.key === backward ? -20 : 20);
                     savePanelSize(edge, size);
+                    savePanelPosition(panel);
                 });
             });
 
@@ -1629,7 +1629,7 @@
                 if (!event.isPrimary || event.button !== 0 || event.target.closest('#bsub-line-count, #bsub-bar-actions')) return;
                 event.preventDefault();
                 const rect = panel.getBoundingClientRect();
-                dragStart = { x: event.clientX, y: event.clientY, left: rect.left, top: rect.top };
+                dragStart = { x: event.clientX, y: event.clientY, left: rect.left, top: rect.top, moved: false };
                 panelBar.setPointerCapture(event.pointerId);
             });
             panelBar.addEventListener('pointermove', event => {
@@ -1641,9 +1641,16 @@
                 panel.style.top = top + 'px';
                 panel.style.right = 'auto';
                 panel.style.bottom = 'auto';
+                dragStart.moved = true;
             });
-            panelBar.addEventListener('pointerup', () => { dragStart = null; });
+            panelBar.addEventListener('pointerup', () => {
+                if (dragStart?.moved) savePanelPosition(panel);
+                dragStart = null;
+            });
             panelBar.addEventListener('pointercancel', () => { dragStart = null; });
+            window.addEventListener('resize', () => {
+                if (panel.classList.contains('visible')) restorePanelPosition(panel);
+            });
 
             // 入口按钮：点击展开面板 / 触发总结流程
             document.getElementById('bsub-dot').addEventListener('click', () => {
@@ -1656,7 +1663,7 @@
                 }
                 // 已有内容 → 直接展开
                 if (content.textContent || STATE.isGenerating) {
-                    panel.classList.add('visible');
+                    showSummaryPanel(panel);
                     return;
                 }
                 // 无字幕 → 自动获取后开始总结
@@ -1664,7 +1671,7 @@
                     if (STATE.isFetchingSubtitle) return;
                     STATE.isFetchingSubtitle = true;
                     STATE.subtitleFetchFailed = false;
-                    panel.classList.add('visible');
+                    showSummaryPanel(panel);
                     content.textContent = '';
                     updateUI();
 
