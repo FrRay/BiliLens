@@ -8,7 +8,7 @@
     <a href="#常见问题">常见问题</a>
   </p>
 
-  <img alt="Version" src="https://img.shields.io/badge/version-5.0.0-00AEEC?style=flat-square">
+  <img alt="Version" src="https://img.shields.io/badge/version-5.0.1-00AEEC?style=flat-square">
   <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-7C3AED?style=flat-square">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Bilibili-FB7299?style=flat-square">
 

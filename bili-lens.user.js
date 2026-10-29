@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/FrRay/BiliLens
-    // @version      5.0.0
+    // @version      5.0.1
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -31,6 +31,7 @@
             isFetchingSubtitle: false,
             subtitleFetchFailed: false,
             subtitleCopyResetTimer: null,
+            subtitleWaitTimeout: null,
             // SPA 切换时清理轮询的句柄
             activePolls: new Set(),
         };
@@ -40,7 +41,7 @@
         // ============================================================
 
         const SUBTITLE_URL_PATTERN = /aisubtitle\.hdslb\.com/i;
-        let subtitleRequestHooksInstalled = false;
+        let removeSubtitleRequestHooks = null;
         const SUBTITLE_PREFERENCES = {
             'ai-zh': 'AI 中文字幕优先',
             ai: '任意 AI 字幕优先',
@@ -48,50 +49,63 @@
             any: '任意可用字幕',
         };
 
-        // 仅在用户主动获取字幕时安装，避免影响播放页初始资源请求。
+        // 只在本次字幕获取期间拦截，结束后恢复页面原有请求方法。
         function installSubtitleRequestHooks() {
-            if (subtitleRequestHooksInstalled) return;
-            subtitleRequestHooksInstalled = true;
+            if (removeSubtitleRequestHooks) return;
+            let active = true;
+            const subtitleRequests = new Map();
 
             const originalFetch = window.fetch;
-            // 必须原样返回 B 站创建的 Promise，不能用 async 包装它，否则会改变所有请求的时序。
-            window.fetch = function (...args) {
-                const url = typeof args[0] === 'string' ? args[0] : (args[0]?.url || '');
+            const wrappedFetch = function (...args) {
                 const responsePromise = originalFetch.apply(this, args);
                 try {
-                    if (SUBTITLE_URL_PATTERN.test(url)) {
+                    const url = typeof args[0] === 'string' ? args[0] : (args[0]?.url || '');
+                    if (active && SUBTITLE_URL_PATTERN.test(url)) {
                         responsePromise.then(response => {
-                            console.debug('[BiliLens] fetch 拦截到字幕请求');
-                            return response.clone().json();
-                        }).then(json => handleInterceptedSubtitle(url, json)).catch(() => {});
+                            if (active) return response.clone().json();
+                        }).then(json => {
+                            if (active && json) handleInterceptedSubtitle(url, json);
+                        }).catch(() => {});
                     }
                 } catch (e) {}
                 return responsePromise;
             };
+            window.fetch = wrappedFetch;
             try {
-                Object.defineProperty(window.fetch, 'toString', { value: () => 'function fetch() { [native code] }' });
+                Object.defineProperty(wrappedFetch, 'toString', { value: () => 'function fetch() { [native code] }' });
             } catch (e) {}
 
             const originalOpen = XMLHttpRequest.prototype.open;
-            const originalSend = XMLHttpRequest.prototype.send;
-            XMLHttpRequest.prototype.open = function (method, url, ...rest) {
-                this._interceptedUrl = url;
-                return originalOpen.call(this, method, url, ...rest);
-            };
-            XMLHttpRequest.prototype.send = function (body) {
-                if (!this._bsubHooked) {
-                    this._bsubHooked = true;
-                    this.addEventListener('load', () => {
-                        try {
-                            const url = this._interceptedUrl || '';
-                            if (SUBTITLE_URL_PATTERN.test(url)) {
-                                console.debug('[BiliLens] XHR 拦截到字幕请求');
-                                handleInterceptedSubtitle(url, JSON.parse(this.responseText));
-                            }
-                        } catch (e) {}
-                    });
+            const wrappedOpen = function (method, url, ...rest) {
+                const result = originalOpen.call(this, method, url, ...rest);
+                const previous = subtitleRequests.get(this);
+                if (previous) {
+                    this.removeEventListener('load', previous);
+                    subtitleRequests.delete(this);
                 }
-                return originalSend.call(this, body);
+                const requestUrl = typeof url === 'string' ? url : (url instanceof URL ? url.href : '');
+                if (active && SUBTITLE_URL_PATTERN.test(requestUrl)) {
+                    const onLoad = () => {
+                        subtitleRequests.delete(this);
+                        try {
+                            const json = this.responseType === 'json' ? this.response : JSON.parse(this.responseText);
+                            if (active && json) handleInterceptedSubtitle(requestUrl, json);
+                        } catch (e) {}
+                    };
+                    subtitleRequests.set(this, onLoad);
+                    this.addEventListener('load', onLoad, { once: true });
+                }
+                return result;
+            };
+            XMLHttpRequest.prototype.open = wrappedOpen;
+
+            removeSubtitleRequestHooks = () => {
+                active = false;
+                if (window.fetch === wrappedFetch) window.fetch = originalFetch;
+                if (XMLHttpRequest.prototype.open === wrappedOpen) XMLHttpRequest.prototype.open = originalOpen;
+                for (const [request, listener] of subtitleRequests) request.removeEventListener('load', listener);
+                subtitleRequests.clear();
+                removeSubtitleRequestHooks = null;
             };
         }
 
@@ -108,7 +122,7 @@
             if (!subtitleBtn) return false;
 
             // 字幕面板可能需要鼠标 hover 才显示，先模拟鼠标移入
-            subtitleBtn.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+            subtitleBtn.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }));
             subtitleBtn.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
 
             // Step 2: 按本地偏好选择字幕；没有命中时始终回退到任意可用字幕。
@@ -164,26 +178,36 @@
             return true;
         }
 
-        // 拿到字幕数据后只使用播放器自己的“关闭字幕”动作；不再改写控制栏状态。
+        function finishSubtitleHover() {
+            const subtitleBtn = document.querySelector('.bpx-player-ctrl-subtitle');
+            if (!subtitleBtn) return;
+            subtitleBtn.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }));
+            subtitleBtn.dispatchEvent(new MouseEvent('mouseleave', { bubbles: false, relatedTarget: document.body }));
+            const player = subtitleBtn.closest('.bpx-player-container');
+            if (player && !player.matches(':hover')) {
+                player.dispatchEvent(new MouseEvent('mouseleave', { bubbles: false, relatedTarget: document.body }));
+            }
+        }
+
+        // 使用播放器自己的“关闭字幕”动作，然后结束模拟的鼠标移入。
         function autoCloseSubtitle() {
+            const subtitleBtn = document.querySelector('.bpx-player-ctrl-subtitle');
+            const pageUrl = window.location.href;
             setTimeout(() => {
+                if (window.location.href !== pageUrl || !subtitleBtn?.isConnected || subtitleBtn !== document.querySelector('.bpx-player-ctrl-subtitle')) return;
                 const closeBtn = document.querySelector('.bpx-player-ctrl-subtitle-close-switch[data-action="close"]');
                 if (closeBtn) {
                     console.debug('[BiliLens] 点击关闭按钮');
                     closeBtn.click();
                 }
-                // 与打开菜单时的模拟 hover 成对结束，让播放器自行收起控制栏。
-                const subtitleBtn = document.querySelector('.bpx-player-ctrl-subtitle');
-                if (subtitleBtn) {
-                    subtitleBtn.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: null }));
-                    subtitleBtn.dispatchEvent(new MouseEvent('mouseleave', { bubbles: false, relatedTarget: null }));
-                }
+                finishSubtitleHover();
             }, 250);
         }
 
         function handleInterceptedSubtitle(url, json) {
             const exists = STATE.interceptedSubtitles.some(s => s.url === url);
             if (!exists) {
+                removeSubtitleRequestHooks?.();
                 STATE.interceptedSubtitles.push({ url, json, timestamp: Date.now() });
                 STATE.subtitleFetchFailed = false;
                 console.debug('[BiliLens] 已缓存字幕数据');
@@ -1785,6 +1809,7 @@
                     installSubtitleRequestHooks();
                     const opened = autoOpenSubtitle();
                     if (!opened) {
+                        removeSubtitleRequestHooks?.();
                         STATE.isFetchingSubtitle = false;
                         STATE.subtitleFetchFailed = true;
                         updateUI();
@@ -1795,16 +1820,20 @@
                         if (STATE.interceptedSubtitles.length > 0) {
                             clearInterval(waitPoll);
                             STATE.activePolls.delete(waitPoll);
-                            clearTimeout(waitTimeout);
+                            clearTimeout(STATE.subtitleWaitTimeout);
+                            STATE.subtitleWaitTimeout = null;
                             STATE.isFetchingSubtitle = false;
                             updateUI();
                             generateAISummary();
                         }
                     }, 500);
                     STATE.activePolls.add(waitPoll);
-                    const waitTimeout = setTimeout(() => {
+                    STATE.subtitleWaitTimeout = setTimeout(() => {
                         clearInterval(waitPoll);
                         STATE.activePolls.delete(waitPoll);
+                        STATE.subtitleWaitTimeout = null;
+                        removeSubtitleRequestHooks?.();
+                        finishSubtitleHover();
                         STATE.isFetchingSubtitle = false;
                         STATE.subtitleFetchFailed = true;
                         updateUI();
@@ -2098,6 +2127,10 @@
             document.getElementById('bsub-refresh')?.classList.remove('spinning');
             clearTimeout(STATE.subtitleCopyResetTimer);
             STATE.subtitleCopyResetTimer = null;
+            clearTimeout(STATE.subtitleWaitTimeout);
+            STATE.subtitleWaitTimeout = null;
+            removeSubtitleRequestHooks?.();
+            if (STATE.isFetchingSubtitle) finishSubtitleHover();
 
             // 清理所有未完成的轮询
             for (const id of STATE.activePolls) {
