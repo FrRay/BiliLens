@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/FrRay/BiliLens
-    // @version      4.14.8
+    // @version      4.14.9
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -950,6 +950,9 @@
                         display: flex;
                         align-items: center;
                         justify-content: space-between;
+                        cursor: move;
+                        user-select: none;
+                        touch-action: none;
                         padding: 10px 16px;
                         border-bottom: 0.5px solid rgba(0, 0, 0, 0.06);
                         flex-shrink: 0;
@@ -1513,17 +1516,19 @@
             }
 
             const setPanelWidth = width => {
-                const maxWidth = Math.min(900, Math.max(1, window.innerWidth - 48));
+                const right = panel.style.left ? panel.getBoundingClientRect().right : window.innerWidth - 48;
+                const maxWidth = Math.min(900, Math.max(1, window.innerWidth - 48), Math.max(1, right));
                 const minWidth = Math.min(380, maxWidth);
                 const value = Math.round(Math.max(minWidth, Math.min(maxWidth, width)));
                 panel.style.width = value + 'px';
+                if (panel.style.left) panel.style.left = Math.max(0, right - value) + 'px';
                 return value;
             };
             let resizeStart = null;
             resizeHandle.addEventListener('pointerdown', event => {
                 if (!event.isPrimary || event.button !== 0) return;
                 event.preventDefault();
-                resizeStart = { x: event.clientX, width: panel.getBoundingClientRect().width, previousWidth: panel.style.width };
+                resizeStart = { x: event.clientX, width: panel.getBoundingClientRect().width, previousWidth: panel.style.width, previousLeft: panel.style.left };
                 resizeHandle.setPointerCapture(event.pointerId);
             });
             resizeHandle.addEventListener('pointermove', event => {
@@ -1539,6 +1544,7 @@
             resizeHandle.addEventListener('pointercancel', () => {
                 if (!resizeStart) return;
                 panel.style.width = resizeStart.previousWidth;
+                panel.style.left = resizeStart.previousLeft;
                 resizeStart = null;
             });
             resizeHandle.addEventListener('keydown', event => {
@@ -1547,6 +1553,29 @@
                 const width = setPanelWidth(panel.getBoundingClientRect().width + (event.key === 'ArrowLeft' ? 20 : -20));
                 if (width >= 380) GM_setValue(PANEL_WIDTH_KEY, width);
             });
+
+            // 顶部空白区域用于拖动；字幕复制和其他按钮保留原有点击行为。
+            const panelBar = document.getElementById('bsub-bar');
+            let dragStart = null;
+            panelBar.addEventListener('pointerdown', event => {
+                if (!event.isPrimary || event.button !== 0 || event.target.closest('#bsub-line-count, #bsub-bar-actions')) return;
+                event.preventDefault();
+                const rect = panel.getBoundingClientRect();
+                dragStart = { x: event.clientX, y: event.clientY, left: rect.left, top: rect.top };
+                panelBar.setPointerCapture(event.pointerId);
+            });
+            panelBar.addEventListener('pointermove', event => {
+                if (!dragStart || !panelBar.hasPointerCapture(event.pointerId)) return;
+                const rect = panel.getBoundingClientRect();
+                const left = Math.max(0, Math.min(window.innerWidth - rect.width, dragStart.left + event.clientX - dragStart.x));
+                const top = Math.max(0, Math.min(window.innerHeight - rect.height, dragStart.top + event.clientY - dragStart.y));
+                panel.style.left = left + 'px';
+                panel.style.top = top + 'px';
+                panel.style.right = 'auto';
+                panel.style.bottom = 'auto';
+            });
+            panelBar.addEventListener('pointerup', () => { dragStart = null; });
+            panelBar.addEventListener('pointercancel', () => { dragStart = null; });
 
             // 入口按钮：点击展开面板 / 触发总结流程
             document.getElementById('bsub-dot').addEventListener('click', () => {
