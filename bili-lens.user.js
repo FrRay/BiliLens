@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/FrRay/BiliLens
-    // @version      4.14.7
+    // @version      4.14.8
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -301,6 +301,7 @@
         const SUMMARY_HISTORY_KEY = 'summary_history_v1';
         const SUMMARY_HISTORY_LIMIT = 20;
         const SUMMARY_HISTORY_MAX_LENGTH = 100000;
+        const PANEL_WIDTH_KEY = 'panel_width';
 
         function getAIConfig() {
             const savedModel = GM_getValue(AI_CONFIG_KEYS.model, DEFAULT_MODEL);
@@ -895,6 +896,8 @@
                         right: 24px;
                         bottom: 80px;
                         width: 380px;
+                        max-width: min(900px, calc(100vw - 48px));
+                        box-sizing: border-box;
                         max-height: 500px;
                         background: rgba(255, 255, 255, 0.82);
                         backdrop-filter: blur(40px) saturate(1.8);
@@ -914,6 +917,33 @@
                         transform: translateY(0) scale(1);
                         pointer-events: auto;
                     }
+                    #bsub-resize {
+                        position: absolute;
+                        z-index: 2;
+                        left: 0;
+                        top: 16px;
+                        bottom: 16px;
+                        width: 10px;
+                        padding: 0;
+                        border: 0;
+                        background: transparent;
+                        cursor: ew-resize;
+                        touch-action: none;
+                    }
+                    #bsub-resize::after {
+                        content: '';
+                        position: absolute;
+                        left: 3px;
+                        top: 50%;
+                        width: 3px;
+                        height: 32px;
+                        border-radius: 3px;
+                        background: #86868b;
+                        opacity: 0.4;
+                        transform: translateY(-50%);
+                    }
+                    #bsub-resize:hover::after,
+                    #bsub-resize:focus-visible::after { opacity: 0.85; }
 
                     /* 状态栏 */
                     #bsub-bar {
@@ -1323,6 +1353,7 @@
 
                 <!-- 总结面板 -->
                 <div id="bsub-panel">
+                    <button id="bsub-resize" type="button" title="拖动调整面板宽度" aria-label="调整面板宽度，使用左右方向键"></button>
                     <div id="bsub-bar">
                         <div id="bsub-bar-info">
                             <span id="bsub-line-count">—</span>
@@ -1474,6 +1505,49 @@
         }
 
         function bindUIEvents() {
+            const panel = document.getElementById('bsub-panel');
+            const resizeHandle = document.getElementById('bsub-resize');
+            const savedWidth = Number(GM_getValue(PANEL_WIDTH_KEY, 380));
+            if (Number.isFinite(savedWidth) && savedWidth >= 380 && savedWidth <= 900) {
+                panel.style.width = savedWidth + 'px';
+            }
+
+            const setPanelWidth = width => {
+                const maxWidth = Math.min(900, Math.max(1, window.innerWidth - 48));
+                const minWidth = Math.min(380, maxWidth);
+                const value = Math.round(Math.max(minWidth, Math.min(maxWidth, width)));
+                panel.style.width = value + 'px';
+                return value;
+            };
+            let resizeStart = null;
+            resizeHandle.addEventListener('pointerdown', event => {
+                if (!event.isPrimary || event.button !== 0) return;
+                event.preventDefault();
+                resizeStart = { x: event.clientX, width: panel.getBoundingClientRect().width, previousWidth: panel.style.width };
+                resizeHandle.setPointerCapture(event.pointerId);
+            });
+            resizeHandle.addEventListener('pointermove', event => {
+                if (!resizeStart || !resizeHandle.hasPointerCapture(event.pointerId)) return;
+                setPanelWidth(resizeStart.width + resizeStart.x - event.clientX);
+            });
+            resizeHandle.addEventListener('pointerup', event => {
+                if (!resizeStart || !resizeHandle.hasPointerCapture(event.pointerId)) return;
+                const width = setPanelWidth(resizeStart.width + resizeStart.x - event.clientX);
+                if (width >= 380) GM_setValue(PANEL_WIDTH_KEY, width);
+                resizeStart = null;
+            });
+            resizeHandle.addEventListener('pointercancel', () => {
+                if (!resizeStart) return;
+                panel.style.width = resizeStart.previousWidth;
+                resizeStart = null;
+            });
+            resizeHandle.addEventListener('keydown', event => {
+                if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+                event.preventDefault();
+                const width = setPanelWidth(panel.getBoundingClientRect().width + (event.key === 'ArrowLeft' ? 20 : -20));
+                if (width >= 380) GM_setValue(PANEL_WIDTH_KEY, width);
+            });
+
             // 入口按钮：点击展开面板 / 触发总结流程
             document.getElementById('bsub-dot').addEventListener('click', () => {
                 const panel = document.getElementById('bsub-panel');
