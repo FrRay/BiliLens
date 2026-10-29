@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/FrRay/BiliLens
-    // @version      4.14.9
+    // @version      4.14.10
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -302,6 +302,7 @@
         const SUMMARY_HISTORY_LIMIT = 20;
         const SUMMARY_HISTORY_MAX_LENGTH = 100000;
         const PANEL_WIDTH_KEY = 'panel_width';
+        const PANEL_HEIGHT_KEY = 'panel_height';
 
         function getAIConfig() {
             const savedModel = GM_getValue(AI_CONFIG_KEYS.model, DEFAULT_MODEL);
@@ -917,33 +918,55 @@
                         transform: translateY(0) scale(1);
                         pointer-events: auto;
                     }
-                    #bsub-resize {
+                    .bsub-resize {
                         position: absolute;
                         z-index: 2;
-                        left: 0;
-                        top: 16px;
-                        bottom: 16px;
-                        width: 10px;
+                        min-width: 0;
+                        min-height: 0;
                         padding: 0;
                         border: 0;
                         background: transparent;
-                        cursor: ew-resize;
                         touch-action: none;
                     }
-                    #bsub-resize::after {
+                    .bsub-resize-left, .bsub-resize-right {
+                        top: 16px;
+                        bottom: 16px;
+                        width: 10px;
+                        cursor: ew-resize;
+                    }
+                    .bsub-resize-left { left: 0; }
+                    .bsub-resize-right { right: 0; }
+                    .bsub-resize-top, .bsub-resize-bottom {
+                        left: 16px;
+                        right: 16px;
+                        height: 10px;
+                        cursor: ns-resize;
+                    }
+                    .bsub-resize-top { top: 0; }
+                    .bsub-resize-bottom { bottom: 0; }
+                    .bsub-resize::after {
                         content: '';
                         position: absolute;
+                        border-radius: 3px;
+                        background: #86868b;
+                        opacity: 0.4;
+                    }
+                    .bsub-resize-left::after, .bsub-resize-right::after {
                         left: 3px;
                         top: 50%;
                         width: 3px;
                         height: 32px;
-                        border-radius: 3px;
-                        background: #86868b;
-                        opacity: 0.4;
                         transform: translateY(-50%);
                     }
-                    #bsub-resize:hover::after,
-                    #bsub-resize:focus-visible::after { opacity: 0.85; }
+                    .bsub-resize-top::after, .bsub-resize-bottom::after {
+                        top: 3px;
+                        left: 50%;
+                        width: 32px;
+                        height: 3px;
+                        transform: translateX(-50%);
+                    }
+                    .bsub-resize:hover::after,
+                    .bsub-resize:focus-visible::after { opacity: 0.85; }
 
                     /* 状态栏 */
                     #bsub-bar {
@@ -1056,6 +1079,10 @@
                         word-break: break-word;
                         min-height: 80px;
                         max-height: 400px;
+                    }
+                    #bsub-panel.bsub-height-adjusted #bsub-content {
+                        min-height: 0;
+                        max-height: none;
                     }
                     /* Markdown 排版 */
                     #bsub-content .bsub-md-h1, #bsub-content .bsub-md-h2, #bsub-content .bsub-md-h3,
@@ -1356,7 +1383,10 @@
 
                 <!-- 总结面板 -->
                 <div id="bsub-panel">
-                    <button id="bsub-resize" type="button" title="拖动调整面板宽度" aria-label="调整面板宽度，使用左右方向键"></button>
+                    <button class="bsub-resize bsub-resize-left" data-edge="left" type="button" title="拖动调整面板宽度" aria-label="调整左边缘，使用左右方向键"></button>
+                    <button class="bsub-resize bsub-resize-right" data-edge="right" type="button" title="拖动调整面板宽度" aria-label="调整右边缘，使用左右方向键"></button>
+                    <button class="bsub-resize bsub-resize-top" data-edge="top" type="button" title="拖动调整面板高度" aria-label="调整上边缘，使用上下方向键"></button>
+                    <button class="bsub-resize bsub-resize-bottom" data-edge="bottom" type="button" title="拖动调整面板高度" aria-label="调整下边缘，使用上下方向键"></button>
                     <div id="bsub-bar">
                         <div id="bsub-bar-info">
                             <span id="bsub-line-count">—</span>
@@ -1509,49 +1539,87 @@
 
         function bindUIEvents() {
             const panel = document.getElementById('bsub-panel');
-            const resizeHandle = document.getElementById('bsub-resize');
             const savedWidth = Number(GM_getValue(PANEL_WIDTH_KEY, 380));
             if (Number.isFinite(savedWidth) && savedWidth >= 380 && savedWidth <= 900) {
                 panel.style.width = savedWidth + 'px';
             }
+            const savedHeight = Number(GM_getValue(PANEL_HEIGHT_KEY, 0));
+            if (Number.isFinite(savedHeight) && savedHeight >= 160 && savedHeight <= 1200) {
+                panel.style.height = savedHeight + 'px';
+                panel.style.maxHeight = 'min(1200px, calc(100vh - 96px))';
+                panel.classList.add('bsub-height-adjusted');
+            }
 
-            const setPanelWidth = width => {
-                const right = panel.style.left ? panel.getBoundingClientRect().right : window.innerWidth - 48;
-                const maxWidth = Math.min(900, Math.max(1, window.innerWidth - 48), Math.max(1, right));
-                const minWidth = Math.min(380, maxWidth);
-                const value = Math.round(Math.max(minWidth, Math.min(maxWidth, width)));
-                panel.style.width = value + 'px';
-                if (panel.style.left) panel.style.left = Math.max(0, right - value) + 'px';
-                return value;
+            const resizePanel = (edge, rect, delta) => {
+                const horizontal = edge === 'left' || edge === 'right';
+                const available = horizontal
+                    ? (edge === 'left' ? rect.right : window.innerWidth - rect.left)
+                    : (edge === 'top' ? rect.bottom : window.innerHeight - rect.top);
+                const maxSize = Math.max(1, Math.min(horizontal ? 900 : 1200,
+                    horizontal ? window.innerWidth - 48 : window.innerHeight - 16, available));
+                const minSize = Math.min(horizontal ? 380 : 160, maxSize);
+                const startSize = horizontal ? rect.width : rect.height;
+                const direction = edge === 'left' || edge === 'top' ? -1 : 1;
+                const size = Math.round(Math.max(minSize, Math.min(maxSize, startSize + direction * delta)));
+                if (horizontal) {
+                    panel.style.width = size + 'px';
+                    panel.style.left = (edge === 'left' ? rect.right - size : rect.left) + 'px';
+                    panel.style.right = 'auto';
+                } else {
+                    panel.style.height = size + 'px';
+                    panel.style.maxHeight = 'min(1200px, calc(100vh - 16px))';
+                    panel.classList.add('bsub-height-adjusted');
+                    panel.style.top = (edge === 'top' ? rect.bottom - size : rect.top) + 'px';
+                    panel.style.bottom = 'auto';
+                }
+                return size;
             };
-            let resizeStart = null;
-            resizeHandle.addEventListener('pointerdown', event => {
-                if (!event.isPrimary || event.button !== 0) return;
-                event.preventDefault();
-                resizeStart = { x: event.clientX, width: panel.getBoundingClientRect().width, previousWidth: panel.style.width, previousLeft: panel.style.left };
-                resizeHandle.setPointerCapture(event.pointerId);
-            });
-            resizeHandle.addEventListener('pointermove', event => {
-                if (!resizeStart || !resizeHandle.hasPointerCapture(event.pointerId)) return;
-                setPanelWidth(resizeStart.width + resizeStart.x - event.clientX);
-            });
-            resizeHandle.addEventListener('pointerup', event => {
-                if (!resizeStart || !resizeHandle.hasPointerCapture(event.pointerId)) return;
-                const width = setPanelWidth(resizeStart.width + resizeStart.x - event.clientX);
-                if (width >= 380) GM_setValue(PANEL_WIDTH_KEY, width);
-                resizeStart = null;
-            });
-            resizeHandle.addEventListener('pointercancel', () => {
-                if (!resizeStart) return;
-                panel.style.width = resizeStart.previousWidth;
-                panel.style.left = resizeStart.previousLeft;
-                resizeStart = null;
-            });
-            resizeHandle.addEventListener('keydown', event => {
-                if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-                event.preventDefault();
-                const width = setPanelWidth(panel.getBoundingClientRect().width + (event.key === 'ArrowLeft' ? 20 : -20));
-                if (width >= 380) GM_setValue(PANEL_WIDTH_KEY, width);
+            const savePanelSize = (edge, size) => {
+                if (edge === 'left' || edge === 'right') {
+                    if (size >= 380) GM_setValue(PANEL_WIDTH_KEY, size);
+                } else if (size >= 160) {
+                    GM_setValue(PANEL_HEIGHT_KEY, size);
+                }
+            };
+            document.querySelectorAll('.bsub-resize').forEach(handle => {
+                const edge = handle.dataset.edge;
+                const horizontal = edge === 'left' || edge === 'right';
+                let start = null;
+                handle.addEventListener('pointerdown', event => {
+                    if (!event.isPrimary || event.button !== 0) return;
+                    event.preventDefault();
+                    start = {
+                        coordinate: horizontal ? event.clientX : event.clientY,
+                        rect: panel.getBoundingClientRect(),
+                        style: panel.style.cssText,
+                        heightAdjusted: panel.classList.contains('bsub-height-adjusted'),
+                    };
+                    handle.setPointerCapture(event.pointerId);
+                });
+                handle.addEventListener('pointermove', event => {
+                    if (!start || !handle.hasPointerCapture(event.pointerId)) return;
+                    resizePanel(edge, start.rect, (horizontal ? event.clientX : event.clientY) - start.coordinate);
+                });
+                handle.addEventListener('pointerup', event => {
+                    if (!start || !handle.hasPointerCapture(event.pointerId)) return;
+                    const size = resizePanel(edge, start.rect, (horizontal ? event.clientX : event.clientY) - start.coordinate);
+                    savePanelSize(edge, size);
+                    start = null;
+                });
+                handle.addEventListener('pointercancel', () => {
+                    if (!start) return;
+                    panel.style.cssText = start.style;
+                    panel.classList.toggle('bsub-height-adjusted', start.heightAdjusted);
+                    start = null;
+                });
+                handle.addEventListener('keydown', event => {
+                    const backward = horizontal ? 'ArrowLeft' : 'ArrowUp';
+                    const forward = horizontal ? 'ArrowRight' : 'ArrowDown';
+                    if (event.key !== backward && event.key !== forward) return;
+                    event.preventDefault();
+                    const size = resizePanel(edge, panel.getBoundingClientRect(), event.key === backward ? -20 : 20);
+                    savePanelSize(edge, size);
+                });
             });
 
             // 顶部空白区域用于拖动；字幕复制和其他按钮保留原有点击行为。

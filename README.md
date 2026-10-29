@@ -8,7 +8,7 @@
     <a href="#常见问题">常见问题</a>
   </p>
 
-  <img alt="Version" src="https://img.shields.io/badge/version-4.14.9-00AEEC?style=flat-square">
+  <img alt="Version" src="https://img.shields.io/badge/version-4.14.10-00AEEC?style=flat-square">
   <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-7C3AED?style=flat-square">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Bilibili-FB7299?style=flat-square">
 
@@ -125,7 +125,7 @@ Agnes 提供免费的默认访问额度，单次视频总结通常对应一次�
 
 齿轮图标用于修改 API、模型与提示词；刷新图标用于基于同一份字幕重新生成总结。设置窗口提供通用总结、要点提纲、学习笔记、行动清单和视频叙事五种提示词模板，选择后仍可继续编辑。
 
-拖动总结面板顶部可以移动面板，拖动左边缘可以调整宽度。调整后的宽度会保存在本地。
+拖动总结面板顶部可以移动面板，拖动面板边缘可以调整宽度和高度。调整后的尺寸会保存在本地。
 
 | 快捷键 | 操作 |
 | --- | --- |
