@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/FrRay/BiliLens
-    // @version      4.14.5
+    // @version      4.14.6
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -528,6 +528,7 @@
             let fullText = '';
             let renderFrame = 0;
             let timedOut = false;
+            let hasRenderedProgress = false;
 
             STATE.isGenerating = true;
             STATE.summaryRequest = { id: requestId, controller };
@@ -538,14 +539,22 @@
             refreshBtn?.classList.add('spinning');
             updateUI();
 
+            const renderSummary = text => {
+                const previousScrollTop = contentEl.scrollTop;
+                const followBottom = !hasRenderedProgress
+                    || contentEl.scrollHeight - contentEl.clientHeight - previousScrollTop <= 16;
+                contentEl.innerHTML = renderMarkdown(text);
+                contentEl.scrollTop = followBottom ? contentEl.scrollHeight : previousScrollTop;
+                hasRenderedProgress = true;
+            };
+
             const renderProgress = text => {
                 fullText = text;
                 if (renderFrame) return;
                 renderFrame = requestAnimationFrame(() => {
                     renderFrame = 0;
                     if (STATE.summaryRequest?.id !== requestId) return;
-                    contentEl.innerHTML = renderMarkdown(fullText);
-                    contentEl.scrollTop = contentEl.scrollHeight;
+                    renderSummary(fullText);
                 });
             };
 
@@ -574,8 +583,7 @@
                 saveSummaryToHistory(fullText, summaryVideoKey, summaryVideoTitle);
                 if (STATE.summaryRequest?.id === requestId && getCurrentVideoKey() === summaryVideoKey) {
                     STATE.lastSummaryMd = fullText;
-                    contentEl.innerHTML = renderMarkdown(fullText);
-                    contentEl.scrollTop = 0;
+                    renderSummary(fullText);
                     statusEl.textContent = '完成';
                     statusEl.style.color = '#34c759';
                     setSummaryActionsVisible(true);
@@ -593,7 +601,7 @@
 
                 if (fullText.trim()) {
                     STATE.lastSummaryMd = fullText;
-                    contentEl.innerHTML = renderMarkdown(fullText);
+                    renderSummary(fullText);
                     statusEl.textContent = '生成中断，已保留当前内容';
                     statusEl.style.color = '#ff9500';
                     setSummaryActionsVisible(true);
