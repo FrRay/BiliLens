@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/FrRay/BiliLens
-    // @version      5.0.2
+    // @version      5.1.0
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -33,6 +33,12 @@
             subtitleFetchFailed: false,
             subtitleCopyResetTimer: null,
             subtitleWaitTimeout: null,
+            // 面板视图：summary 为 AI 总结，lines 为逐句字幕
+            panelView: 'summary',
+            subtitleLines: [],
+            subtitleActiveIndex: -1,
+            subtitleFollow: true,
+            subtitleTimeHandler: null,
             // SPA 切换时清理轮询的句柄
             activePolls: new Set(),
         };
@@ -329,6 +335,7 @@
         const PANEL_WIDTH_KEY = 'panel_width';
         const PANEL_HEIGHT_KEY = 'panel_height';
         const PANEL_POSITION_KEY = 'panel_position';
+        const SUBTITLE_FOLLOW_KEY = 'subtitle_follow';
 
         function restorePanelPosition(panel) {
             const position = GM_getValue(PANEL_POSITION_KEY, null);
@@ -416,6 +423,13 @@
             if (!visible) return;
 
             list.style.top = document.getElementById('bsub-bar').offsetHeight + 'px';
+            renderSummaryHistory();
+        }
+
+        // 历史条目支持单条删除与整表清空，删除当前视频的条目时同步清空面板。
+        function renderSummaryHistory() {
+            const list = document.getElementById('bsub-history');
+            if (!list) return;
             list.replaceChildren();
             const entries = getSummaryHistory().slice(0, SUMMARY_HISTORY_LIMIT)
                 .map(entry => ({ entry, url: historyVideoUrl(entry?.videoKey) }))
@@ -427,9 +441,51 @@
                 list.appendChild(empty);
                 return;
             }
+
+            const toolbar = document.createElement('div');
+            toolbar.className = 'bsub-history-toolbar';
+            const count = document.createElement('span');
+            count.className = 'bsub-history-count';
+            count.textContent = `共 ${entries.length} 条`;
+            const clearAll = document.createElement('button');
+            clearAll.type = 'button';
+            clearAll.className = 'bsub-history-clear';
+            clearAll.textContent = '清空全部';
+            let armed = false;
+            let armTimer = null;
+            const disarm = () => {
+                armed = false;
+                clearTimeout(armTimer);
+                armTimer = null;
+                clearAll.classList.remove('armed');
+                clearAll.textContent = '清空全部';
+            };
+            clearAll.addEventListener('click', () => {
+                if (!armed) {
+                    armed = true;
+                    clearAll.classList.add('armed');
+                    clearAll.textContent = '确认清空？';
+                    armTimer = setTimeout(disarm, 3000);
+                    return;
+                }
+                const currentKey = getCurrentVideoKey();
+                const hadCurrent = !!currentKey && entries.some(item => item.entry.videoKey === currentKey);
+                disarm();
+                clearSummaryHistory();
+                if (hadCurrent) clearCurrentSummary();
+                renderSummaryHistory();
+                showToast('已清空本地总结历史');
+            });
+            toolbar.append(count, clearAll);
+            list.appendChild(toolbar);
+
+            const fragment = document.createDocumentFragment();
             entries.forEach(({ entry, url }) => {
+                const item = document.createElement('div');
+                item.className = 'bsub-history-item';
+
                 const link = document.createElement('a');
-                link.className = 'bsub-history-item';
+                link.className = 'bsub-history-link';
                 link.href = url;
                 const title = document.createElement('span');
                 title.className = 'bsub-history-title';
@@ -447,8 +503,26 @@
                     setHistoryVisible(false);
                     if (!STATE.isGenerating) restoreSummaryFromHistory();
                 });
-                list.appendChild(link);
+
+                const remove = document.createElement('button');
+                remove.type = 'button';
+                remove.className = 'bsub-history-remove';
+                remove.title = '删除这条总结';
+                remove.setAttribute('aria-label', '删除这条总结');
+                remove.textContent = '×';
+                remove.addEventListener('click', event => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (!removeSummaryFromHistory(entry.videoKey)) return;
+                    if (entry.videoKey === getCurrentVideoKey()) clearCurrentSummary();
+                    renderSummaryHistory();
+                    showToast('已删除这条本地总结');
+                });
+
+                item.append(link, remove);
+                fragment.appendChild(item);
             });
+            list.appendChild(fragment);
         }
 
         function saveSummaryToHistory(summary, videoKey = getCurrentVideoKey(), title = document.title) {
@@ -478,6 +552,25 @@
             return true;
         }
 
+        function clearSummaryHistory() {
+            try {
+                GM_setValue(SUMMARY_HISTORY_KEY, []);
+            } catch (error) {
+                console.warn('[BiliLens] 清空本地总结失败:', error);
+            }
+        }
+
+        // 清空面板上的总结，并删除当前视频对应的历史条目。
+        function clearCurrentSummary() {
+            const videoKey = getCurrentVideoKey();
+            if (videoKey) removeSummaryFromHistory(videoKey);
+            STATE.lastSummaryMd = '';
+            const contentEl = document.getElementById('bsub-content');
+            if (contentEl) contentEl.textContent = '';
+            setSummaryActionsVisible(false);
+            updateUI();
+        }
+
         function setSummaryActionsVisible(visible) {
             const display = visible ? 'inline-flex' : 'none';
             ['bsub-copy-btn', 'bsub-download-btn', 'bsub-clear-btn'].forEach(id => {
@@ -496,6 +589,7 @@
             STATE.lastSummaryMd = entry.summary;
             const contentEl = document.getElementById('bsub-content');
             if (!contentEl) return false;
+            if (STATE.panelView === 'lines') setPanelView('summary');
             contentEl.innerHTML = renderMarkdown(entry.summary);
             setSummaryActionsVisible(true);
             updateUI();
@@ -521,9 +615,25 @@
             return content.map(part => typeof part === 'string' ? part : (part?.text || '')).join('');
         }
 
+        // 部分兼容接口会用 HTTP 200 返回错误体，这里把错误信息提取出来。
+        function extractAIError(payload) {
+            const error = payload?.error;
+            if (error) {
+                if (typeof error === 'string') return error;
+                return error.message || error.msg || error.code || '未知错误';
+            }
+            if (!payload?.choices && payload?.code !== undefined && Number(payload.code) !== 0) {
+                return payload.message || payload.msg || `错误码 ${payload.code}`;
+            }
+            return '';
+        }
+
         async function readAIResponse(response, onProgress) {
             if (!response.body) {
-                const text = extractAIText(await response.json());
+                const payload = await response.json();
+                const errorText = extractAIError(payload);
+                if (errorText) throw new Error('模型服务返回错误：' + errorText);
+                const text = extractAIText(payload);
                 if (!text) throw new Error('模型未返回总结内容');
                 onProgress(text);
                 return text;
@@ -534,6 +644,7 @@
             let buffer = '';
             let rawResponse = '';
             let fullText = '';
+            let streamError = '';
 
             const consumeLine = line => {
                 const trimmed = line.trim();
@@ -541,7 +652,13 @@
                 const data = trimmed.startsWith('data:') ? trimmed.slice(5).trim() : trimmed;
                 if (!data || data === '[DONE]') return;
                 try {
-                    const content = extractAIText(JSON.parse(data));
+                    const payload = JSON.parse(data);
+                    const errorText = extractAIError(payload);
+                    if (errorText) {
+                        streamError = errorText;
+                        return;
+                    }
+                    const content = extractAIText(payload);
                     if (!content) return;
                     fullText += content;
                     onProgress(fullText);
@@ -566,35 +683,81 @@
 
             // 部分兼容接口会忽略 stream 参数，直接返回一份 JSON。
             if (!fullText && rawResponse.trim()) {
+                let payload = null;
                 try {
-                    fullText = extractAIText(JSON.parse(rawResponse));
-                    if (fullText) onProgress(fullText);
+                    payload = JSON.parse(rawResponse);
                 } catch (_) {}
+                if (payload) {
+                    const errorText = extractAIError(payload);
+                    if (errorText) throw new Error('模型服务返回错误：' + errorText);
+                    fullText = extractAIText(payload);
+                    if (fullText) onProgress(fullText);
+                }
             }
+            if (!fullText && streamError) throw new Error('模型服务返回错误：' + streamError);
             if (!fullText) throw new Error('模型未返回总结内容');
             return fullText;
         }
 
+        // 允许省略协议头，并清掉粘贴时常见的引号、空白与结尾斜杠。
+        function normalizeApiUrl(value) {
+            let url = typeof value === 'string' ? value.trim() : '';
+            if (!url) return '';
+            url = url.replace(/^["'<`\s]+|["'>`\s]+$/g, '');
+            if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(url)) url = 'https://' + url;
+            return url.replace(/\/+$/, '');
+        }
+
+        // 把 HTTP 状态码翻译成用户可执行的排查提示。
+        function apiErrorMessage(status, serverMessage) {
+            const message = typeof serverMessage === 'string' ? serverMessage.replace(/\s+/g, ' ').trim().slice(0, 160) : '';
+            const detail = message ? `（服务端返回：${message}）` : '';
+            if (status === 401 || status === 403) {
+                return `API Key 无效或无权限（HTTP ${status}），请检查设置里的 Key 是否与当前 API URL 配套${detail}`;
+            }
+            if (status === 404) {
+                return `接口地址不存在（HTTP 404），请检查 API URL 是否完整，通常以 /chat/completions 结尾${detail}`;
+            }
+            if (status === 429) {
+                return `请求过于频繁（HTTP 429），请稍后再试${detail}`;
+            }
+            if (status >= 500) {
+                return `模型服务暂时不可用（HTTP ${status}），请稍后重试${detail}`;
+            }
+            return message ? `${message}（HTTP ${status}）` : `HTTP ${status}`;
+        }
+
         async function requestAISummary(config, requestBody, signal, onProgress) {
-            const response = await fetch(config.apiUrl, {
-                signal,
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': 'Bearer ' + config.apiKey,
-                    'Accept': 'text/event-stream, application/json',
-                },
-                body: JSON.stringify(requestBody),
-            });
+            const apiUrl = normalizeApiUrl(config.apiUrl);
+            if (!apiUrl) throw new Error('未配置 API URL');
+
+            let response;
+            try {
+                response = await fetch(apiUrl, {
+                    signal,
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'Bearer ' + config.apiKey,
+                        'Accept': 'text/event-stream, application/json',
+                    },
+                    body: JSON.stringify(requestBody),
+                });
+            } catch (error) {
+                if (error?.name === 'AbortError') throw error;
+                throw new Error('无法连接模型服务：请检查网络是否可用，或确认该接口允许来自 bilibili.com 的跨域请求（CORS）。原始错误：' + (error?.message || '网络错误'));
+            }
 
             if (!response.ok) {
-                const errorText = await response.text();
-                let message = `HTTP ${response.status}`;
+                const errorText = await response.text().catch(() => '');
+                let serverMessage = '';
                 try {
                     const errorData = JSON.parse(errorText);
-                    message = errorData?.error?.message || errorData?.message || message;
-                } catch (_) {}
-                throw new Error(message);
+                    serverMessage = errorData?.error?.message || errorData?.message || '';
+                } catch (_) {
+                    serverMessage = errorText;
+                }
+                throw new Error(apiErrorMessage(response.status, serverMessage));
             }
             return readAIResponse(response, onProgress);
         }
@@ -633,6 +796,7 @@
 
             STATE.isGenerating = true;
             STATE.summaryRequest = { id: requestId, controller };
+            if (STATE.panelView === 'lines') setPanelView('summary');
             showSummaryPanel(panel);
             statusEl.textContent = '生成中…';
             statusEl.style.color = '#86868b';
@@ -756,9 +920,13 @@
             });
         }
 
-        function seekVideoTo(seconds) {
+        function getActiveVideo() {
             const videos = [...document.querySelectorAll('video')];
-            const video = videos.find(item => Number.isFinite(item.duration) && item.duration > 0) || videos[0];
+            return videos.find(item => Number.isFinite(item.duration) && item.duration > 0) || videos[0] || null;
+        }
+
+        function seekVideoTo(seconds) {
+            const video = getActiveVideo();
             if (!video) return false;
 
             const seek = () => {
@@ -770,6 +938,140 @@
             if (video.readyState === 0) video.addEventListener('loadedmetadata', seek, { once: true });
             else seek();
             return true;
+        }
+
+        // ============================================================
+        // 逐句字幕视图 — 可点击跳转，并跟随播放高亮当前行
+        // ============================================================
+
+        function getSubtitleLines() {
+            const body = getFirstSubtitle()?.body || [];
+            return body
+                .map(item => {
+                    const content = typeof item?.content === 'string' ? item.content.trim() : '';
+                    const from = Number(item?.from);
+                    return { content, from: Number.isFinite(from) && from >= 0 ? from : null };
+                })
+                .filter(line => line.content);
+        }
+
+        function renderSubtitleLines() {
+            const list = document.getElementById('bsub-lines-list');
+            if (!list) return;
+            list.replaceChildren();
+            STATE.subtitleActiveIndex = -1;
+
+            const lines = getSubtitleLines();
+            STATE.subtitleLines = lines;
+            const countEl = document.getElementById('bsub-lines-count');
+            if (countEl) countEl.textContent = lines.length ? `字幕 ${lines.length} 行` : '暂无字幕';
+
+            if (!lines.length) {
+                const empty = document.createElement('div');
+                empty.className = 'bsub-history-empty';
+                empty.textContent = '没有可用的字幕数据';
+                list.appendChild(empty);
+                return;
+            }
+
+            const fragment = document.createDocumentFragment();
+            lines.forEach((line, index) => {
+                const row = document.createElement('button');
+                row.type = 'button';
+                row.className = 'bsub-line';
+                row.dataset.index = String(index);
+                if (line.from !== null) row.dataset.start = String(line.from);
+                row.title = '跳转到该时间点';
+
+                const time = document.createElement('span');
+                time.className = 'bsub-line-time';
+                time.textContent = line.from !== null ? formatTimestamp(line.from) : '--:--';
+                const text = document.createElement('span');
+                text.className = 'bsub-line-text';
+                text.textContent = line.content;
+                row.append(time, text);
+                fragment.appendChild(row);
+            });
+            list.appendChild(fragment);
+        }
+
+        function setActiveSubtitleLine(index, scroll = true) {
+            const list = document.getElementById('bsub-lines-list');
+            if (!list || index === STATE.subtitleActiveIndex) return;
+
+            const previous = list.querySelector('.bsub-line.active');
+            if (previous) previous.classList.remove('active');
+            STATE.subtitleActiveIndex = index;
+            if (index < 0) return;
+
+            const row = list.querySelector(`.bsub-line[data-index="${index}"]`);
+            if (!row) return;
+            row.classList.add('active');
+            if (scroll && STATE.subtitleFollow) row.scrollIntoView({ block: 'nearest' });
+        }
+
+        // 线性扫描字幕时间轴；timeupdate 约 4 次/秒，行数在数千级，开销可忽略。
+        function findSubtitleIndexAt(currentTime) {
+            const lines = STATE.subtitleLines;
+            if (!lines.length || !Number.isFinite(currentTime)) return -1;
+            const target = currentTime + 0.25;
+            let index = -1;
+            for (let i = 0; i < lines.length; i += 1) {
+                const from = lines[i].from;
+                if (from === null) continue;
+                if (from > target) break;
+                index = i;
+            }
+            return index;
+        }
+
+        function handlePlaybackTime() {
+            const panel = document.getElementById('bsub-panel');
+            if (!panel || !panel.classList.contains('visible') || STATE.panelView !== 'lines') return;
+            const video = getActiveVideo();
+            if (!video) return;
+            setActiveSubtitleLine(findSubtitleIndexAt(video.currentTime));
+        }
+
+        function detachSubtitleFollow() {
+            const entry = STATE.subtitleTimeHandler;
+            if (entry) entry.video.removeEventListener('timeupdate', entry.handler);
+            STATE.subtitleTimeHandler = null;
+        }
+
+        function attachSubtitleFollow() {
+            detachSubtitleFollow();
+            const video = getActiveVideo();
+            if (!video) return;
+            const handler = () => handlePlaybackTime();
+            video.addEventListener('timeupdate', handler);
+            STATE.subtitleTimeHandler = { video, handler };
+            handlePlaybackTime();
+        }
+
+        function updateSubtitleFollowButton() {
+            const button = document.getElementById('bsub-lines-follow');
+            if (!button) return;
+            button.setAttribute('aria-pressed', String(STATE.subtitleFollow));
+            button.textContent = STATE.subtitleFollow ? '跟随播放' : '已暂停跟随';
+        }
+
+        function setPanelView(view) {
+            const panel = document.getElementById('bsub-panel');
+            const button = document.getElementById('bsub-subtitles-btn');
+            if (!panel) return;
+            STATE.panelView = view === 'lines' ? 'lines' : 'summary';
+            panel.classList.toggle('bsub-view-lines', STATE.panelView === 'lines');
+            if (button) button.setAttribute('aria-pressed', String(STATE.panelView === 'lines'));
+
+            if (STATE.panelView === 'lines') {
+                setHistoryVisible(false);
+                renderSubtitleLines();
+                updateSubtitleFollowButton();
+                attachSubtitleFollow();
+            } else {
+                detachSubtitleFollow();
+            }
         }
 
         // ============================================================
@@ -1179,6 +1481,97 @@
                     #bsub-panel.bsub-show-history:not(.bsub-height-adjusted) #bsub-content {
                         min-height: 260px;
                     }
+
+                    /* 逐句字幕视图 */
+                    #bsub-subtitles-btn {
+                        width: 20px;
+                        height: 20px;
+                        cursor: pointer;
+                        opacity: 0.4;
+                        transition: opacity 0.15s ease;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                    }
+                    #bsub-subtitles-btn:hover { opacity: 0.8; }
+                    #bsub-subtitles-btn[aria-pressed="true"] { opacity: 1; color: #007aff; }
+                    #bsub-subtitles-btn svg { width: 15px; height: 15px; }
+                    #bsub-lines {
+                        display: none;
+                        flex: 1;
+                        flex-direction: column;
+                        min-height: 80px;
+                        max-height: 400px;
+                        overflow: hidden;
+                    }
+                    #bsub-panel.bsub-view-lines #bsub-lines { display: flex; }
+                    #bsub-panel.bsub-view-lines #bsub-content { display: none; }
+                    #bsub-panel.bsub-view-lines.bsub-height-adjusted #bsub-lines {
+                        min-height: 0;
+                        max-height: none;
+                    }
+                    #bsub-lines-head {
+                        display: flex;
+                        align-items: center;
+                        justify-content: space-between;
+                        gap: 8px;
+                        padding: 8px 16px;
+                        border-bottom: 0.5px solid rgba(0, 0, 0, 0.06);
+                        font-size: 12px;
+                        color: #86868b;
+                        flex-shrink: 0;
+                    }
+                    #bsub-lines-follow {
+                        padding: 3px 9px;
+                        border: 0.5px solid #d2d2d7;
+                        border-radius: 10px;
+                        background: transparent;
+                        color: #86868b;
+                        font-size: 11px;
+                        font-family: inherit;
+                        cursor: pointer;
+                        transition: all 0.15s ease;
+                    }
+                    #bsub-lines-follow[aria-pressed="true"] {
+                        border-color: rgba(0, 122, 255, 0.4);
+                        background: rgba(0, 122, 255, 0.1);
+                        color: #007aff;
+                    }
+                    #bsub-lines-list {
+                        flex: 1;
+                        overflow-y: auto;
+                        overscroll-behavior-y: contain;
+                        padding: 6px 8px 10px;
+                    }
+                    .bsub-line {
+                        display: flex;
+                        gap: 8px;
+                        width: 100%;
+                        padding: 6px 8px;
+                        border: 0;
+                        border-radius: 6px;
+                        background: transparent;
+                        color: #1d1d1f;
+                        font-family: inherit;
+                        font-size: 13px;
+                        line-height: 1.6;
+                        text-align: left;
+                        cursor: pointer;
+                        transition: background 0.15s ease;
+                    }
+                    .bsub-line:hover { background: rgba(0, 122, 255, 0.08); }
+                    .bsub-line.active { background: rgba(0, 122, 255, 0.14); }
+                    .bsub-line-time {
+                        flex-shrink: 0;
+                        color: #007aff;
+                        font-variant-numeric: tabular-nums;
+                    }
+                    .bsub-line-text {
+                        flex: 1;
+                        min-width: 0;
+                        overflow-wrap: anywhere;
+                    }
+
                     #bsub-history {
                         display: none;
                         position: absolute;
@@ -1191,18 +1584,75 @@
                         padding: 8px 12px;
                         background: rgba(255, 255, 255, 0.96);
                     }
+                    .bsub-history-toolbar {
+                        display: flex;
+                        align-items: center;
+                        justify-content: space-between;
+                        gap: 8px;
+                        padding: 2px 8px 8px;
+                        margin-bottom: 4px;
+                        border-bottom: 0.5px solid rgba(0, 0, 0, 0.06);
+                    }
+                    .bsub-history-count,
+                    .bsub-history-date,
+                    .bsub-history-empty {
+                        color: #86868b;
+                        font-size: 12px;
+                    }
+                    .bsub-history-clear {
+                        padding: 2px 4px;
+                        border: none;
+                        background: none;
+                        color: #007aff;
+                        font-size: 12px;
+                        font-family: inherit;
+                        cursor: pointer;
+                        border-radius: 4px;
+                        transition: color 0.15s ease;
+                    }
+                    .bsub-history-clear:hover { text-decoration: underline; }
+                    .bsub-history-clear.armed { color: #ff3b30; font-weight: 600; }
                     .bsub-history-item {
                         display: flex;
+                        align-items: center;
+                        gap: 6px;
+                        border-radius: 6px;
+                        color: #1d1d1f;
+                    }
+                    .bsub-history-item:hover { background: rgba(0, 122, 255, 0.08); }
+                    .bsub-history-link {
+                        display: flex;
+                        flex: 1;
+                        min-width: 0;
                         flex-direction: column;
                         gap: 3px;
                         padding: 9px 8px;
-                        border-radius: 6px;
-                        color: #1d1d1f;
+                        color: inherit;
                         text-decoration: none;
                     }
-                    .bsub-history-item:hover { background: rgba(0, 122, 255, 0.08); }
+                    .bsub-history-remove {
+                        flex-shrink: 0;
+                        width: 22px;
+                        height: 22px;
+                        margin-right: 6px;
+                        padding: 0;
+                        border: none;
+                        border-radius: 50%;
+                        background: none;
+                        color: #aeaeb2;
+                        font-size: 16px;
+                        line-height: 1;
+                        font-family: inherit;
+                        cursor: pointer;
+                        opacity: 0.6;
+                        transition: all 0.15s ease;
+                    }
+                    .bsub-history-remove:hover {
+                        background: rgba(255, 59, 48, 0.12);
+                        color: #ff3b30;
+                        opacity: 1;
+                    }
                     .bsub-history-title { font-size: 13px; overflow-wrap: anywhere; }
-                    .bsub-history-date, .bsub-history-empty { color: #86868b; font-size: 12px; }
                     .bsub-history-empty { padding: 16px 8px; }
                     /* Markdown 排版 */
                     #bsub-content .bsub-md-h1, #bsub-content .bsub-md-h2, #bsub-content .bsub-md-h3,
@@ -1397,6 +1847,34 @@
                         border-color: #007aff;
                         box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.1);
                     }
+                    .bsub-settings-test {
+                        display: flex;
+                        align-items: center;
+                        gap: 10px;
+                        margin-top: 12px;
+                    }
+                    #bsub-settings-test {
+                        flex-shrink: 0;
+                        padding: 7px 14px;
+                        border: 0.5px solid #d2d2d7;
+                        border-radius: 8px;
+                        background: transparent;
+                        color: #007aff;
+                        font-size: 13px;
+                        font-family: inherit;
+                        cursor: pointer;
+                        transition: all 0.15s ease;
+                    }
+                    #bsub-settings-test:hover:not(:disabled) { background: rgba(0, 122, 255, 0.08); }
+                    #bsub-settings-test:disabled { opacity: 0.5; cursor: default; }
+                    #bsub-settings-test-result {
+                        flex: 1;
+                        min-width: 0;
+                        font-size: 12px;
+                        line-height: 1.4;
+                        color: #86868b;
+                        overflow-wrap: anywhere;
+                    }
                     .bsub-settings-actions {
                         display: flex;
                         gap: 8px;
@@ -1438,6 +1916,13 @@
                         }
                         #bsub-history { background: rgba(30, 30, 32, 0.97); }
                         .bsub-history-item { color: #f5f5f7; }
+                        .bsub-history-toolbar { border-bottom-color: rgba(255, 255, 255, 0.1); }
+                        #bsub-lines-head { border-bottom-color: rgba(255, 255, 255, 0.1); }
+                        .bsub-line { color: #f5f5f7; }
+                        .bsub-line.active { background: rgba(10, 132, 255, 0.22); }
+                        .bsub-line-time { color: #64d2ff; }
+                        #bsub-lines-follow { border-color: rgba(255, 255, 255, 0.16); }
+                        #bsub-settings-test { border-color: rgba(255, 255, 255, 0.16); }
                         #bsub-content .bsub-md-quote {
                             color: #aeaeb2;
                         }
@@ -1519,6 +2004,12 @@
                             <span id="bsub-status-text">就绪</span>
                         </div>
                         <div id="bsub-bar-actions">
+                            <div id="bsub-subtitles-btn" title="逐句查看字幕" role="button" tabindex="0" aria-label="逐句查看字幕" aria-pressed="false">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <rect x="3" y="5" width="18" height="14" rx="2"></rect>
+                                    <path d="M7 10h10M7 14h6"></path>
+                                </svg>
+                            </div>
                             <div id="bsub-refresh" title="重新生成">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                     <path d="M23 4v6h-6"></path>
@@ -1542,6 +2033,13 @@
                         </div>
                     </div>
                     <div id="bsub-content"></div>
+                    <div id="bsub-lines" aria-label="逐句字幕">
+                        <div id="bsub-lines-head">
+                            <span id="bsub-lines-count">字幕</span>
+                            <button id="bsub-lines-follow" type="button" aria-pressed="true">跟随播放</button>
+                        </div>
+                        <div id="bsub-lines-list"></div>
+                    </div>
                     <div id="bsub-history" aria-label="本地总结历史"></div>
                 </div>
 
@@ -1589,6 +2087,10 @@
                                 <div class="bsub-field-hint">选择模板后可继续编辑下方内容</div>
                                 <textarea id="bsub-ai-prompt" rows="4" placeholder="输入提示词，字幕内容会自动拼接到末尾"></textarea>
                                 <div class="bsub-field-hint">只填写提示词部分，字幕文本由脚本自动拼接，无需手动插入</div>
+                            </div>
+                            <div class="bsub-settings-test">
+                                <button id="bsub-settings-test" type="button">测试连接</button>
+                                <span id="bsub-settings-test-result"></span>
                             </div>
                             <div class="bsub-settings-actions">
                                 <button id="bsub-settings-cancel">取消</button>
@@ -1877,13 +2379,8 @@
             });
 
             document.getElementById('bsub-clear-btn').addEventListener('click', () => {
-                if (!STATE.lastSummaryMd || !removeSummaryFromHistory()) return;
-                STATE.lastSummaryMd = '';
-                document.getElementById('bsub-content').textContent = '';
-                document.getElementById('bsub-copy-btn').style.display = 'none';
-                document.getElementById('bsub-download-btn').style.display = 'none';
-                document.getElementById('bsub-clear-btn').style.display = 'none';
-                updateUI();
+                if (!STATE.lastSummaryMd) return;
+                clearCurrentSummary();
                 showToast('已清除本视频的本地总结');
             });
 
@@ -1928,6 +2425,7 @@
             // 设置弹窗事件
             document.getElementById('bsub-settings-cancel').addEventListener('click', closeSettings);
             document.getElementById('bsub-settings-save').addEventListener('click', saveSettings);
+            document.getElementById('bsub-settings-test').addEventListener('click', testApiConnection);
             document.getElementById('bsub-settings-overlay').addEventListener('click', (e) => {
                 if (e.target.id === 'bsub-settings-overlay') closeSettings();
             });
@@ -1940,6 +2438,43 @@
             });
             promptInput.addEventListener('input', () => {
                 templateSelect.value = getPromptTemplateId(promptInput.value);
+            });
+
+            // 逐句字幕视图：切换、跟随开关与点击跳转
+            STATE.subtitleFollow = GM_getValue(SUBTITLE_FOLLOW_KEY, true) !== false;
+            updateSubtitleFollowButton();
+
+            document.getElementById('bsub-subtitles-btn').addEventListener('click', () => {
+                if (STATE.panelView === 'lines') {
+                    setPanelView('summary');
+                    return;
+                }
+                if (!getSubtitleLines().length) {
+                    showToast('没有字幕数据');
+                    return;
+                }
+                setPanelView('lines');
+            });
+
+            document.getElementById('bsub-lines-follow').addEventListener('click', () => {
+                STATE.subtitleFollow = !STATE.subtitleFollow;
+                GM_setValue(SUBTITLE_FOLLOW_KEY, STATE.subtitleFollow);
+                updateSubtitleFollowButton();
+                if (STATE.subtitleFollow) handlePlaybackTime();
+            });
+
+            document.getElementById('bsub-lines-list').addEventListener('click', event => {
+                if (!(event.target instanceof Element)) return;
+                const row = event.target.closest('.bsub-line');
+                if (!row) return;
+                const start = Number(row.dataset.start);
+                if (!Number.isFinite(start)) return;
+                if (!seekVideoTo(start)) {
+                    showToast('未找到视频播放器');
+                    return;
+                }
+                setActiveSubtitleLine(Number(row.dataset.index));
+                showToast(`已跳转至 ${formatTimestamp(start)}`);
             });
 
         }
@@ -1980,6 +2515,11 @@
             document.getElementById('bsub-subtitle-preference').value = SUBTITLE_PREFERENCES[c.subtitlePreference] ? c.subtitlePreference : 'ai-zh';
             document.getElementById('bsub-ai-prompt').value = c.prompt || DEFAULT_PROMPT;
             document.getElementById('bsub-prompt-template').value = getPromptTemplateId(c.prompt || DEFAULT_PROMPT);
+            const testResult = document.getElementById('bsub-settings-test-result');
+            if (testResult) {
+                testResult.textContent = '';
+                testResult.style.color = '#86868b';
+            }
             document.getElementById('bsub-settings-overlay').classList.add('visible');
         }
 
@@ -1987,16 +2527,68 @@
             document.getElementById('bsub-settings-overlay').classList.remove('visible');
         }
 
+        // 只发送一句极短的请求，用于确认 URL、Key 与模型三者是否配套。
+        async function testApiConnection() {
+            const button = document.getElementById('bsub-settings-test');
+            const resultEl = document.getElementById('bsub-settings-test-result');
+            if (!button || !resultEl) return;
+
+            const config = {
+                apiUrl: normalizeApiUrl(document.getElementById('bsub-ai-url').value),
+                apiKey: document.getElementById('bsub-ai-key').value.trim(),
+                model: document.getElementById('bsub-ai-model').value.trim(),
+            };
+            const setResult = (text, color) => {
+                resultEl.textContent = text;
+                resultEl.style.color = color;
+            };
+
+            if (!config.apiUrl || !config.apiKey || !config.model) {
+                setResult('请先填写 API URL、API Key 与模型', '#ff9500');
+                return;
+            }
+
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 20000);
+            button.disabled = true;
+            button.textContent = '测试中…';
+            setResult('正在连接…', '#86868b');
+            try {
+                const text = await requestAISummary(config, {
+                    model: config.model,
+                    messages: [{ role: 'user', content: 'ping' }],
+                    max_tokens: 8,
+                    stream: true,
+                }, controller.signal, () => {});
+                setResult(text ? '连接成功，模型可以正常返回内容' : '连接成功，但模型没有返回内容', text ? '#34c759' : '#ff9500');
+            } catch (error) {
+                if (error?.name === 'AbortError') {
+                    setResult('连接超时（20 秒内没有响应）', '#ff3b30');
+                } else if (error?.message === '模型未返回总结内容') {
+                    setResult('连接成功，但模型没有返回内容', '#ff9500');
+                } else {
+                    setResult(error?.message || '连接失败', '#ff3b30');
+                }
+            } finally {
+                clearTimeout(timeoutId);
+                button.disabled = false;
+                button.textContent = '测试连接';
+            }
+        }
+
         function saveSettings() {
+            const apiUrl = normalizeApiUrl(document.getElementById('bsub-ai-url').value);
             saveAIConfig({
-                apiUrl: document.getElementById('bsub-ai-url').value.trim(),
+                apiUrl,
                 apiKey: document.getElementById('bsub-ai-key').value.trim(),
                 model: document.getElementById('bsub-ai-model').value.trim(),
                 prompt: document.getElementById('bsub-ai-prompt').value.trim() || DEFAULT_PROMPT,
                 subtitlePreference: document.getElementById('bsub-subtitle-preference').value,
             });
+            document.getElementById('bsub-ai-url').value = apiUrl;
             closeSettings();
-            showToast('已保存');
+            const looksComplete = !apiUrl || /completions$/i.test(apiUrl);
+            showToast(looksComplete ? '已保存' : '已保存，但 API URL 通常以 /chat/completions 结尾');
             updateUI();
         }
 
@@ -2072,7 +2664,7 @@
         function showToast(message) {
             if (!_toastEl) {
                 _toastEl = document.createElement('div');
-                _toastEl.style.css = `
+                _toastEl.style.cssText = `
                     position: fixed;
                     top: 24px;
                     left: 50%;
@@ -2132,6 +2724,8 @@
             STATE.subtitleWaitTimeout = null;
             removeSubtitleRequestHooks?.();
             if (STATE.isFetchingSubtitle) finishSubtitleHover();
+            detachSubtitleFollow();
+            setPanelView('summary');
 
             // 清理所有未完成的轮询
             for (const id of STATE.activePolls) {
@@ -2149,6 +2743,8 @@
                 STATE.isFetchingSubtitle = false;
                 STATE.subtitleFetchFailed = false;
                 STATE.lastSummaryMd = '';
+                STATE.subtitleLines = [];
+                STATE.subtitleActiveIndex = -1;
                 STATE.dotInserted = false;
                 const panel = document.getElementById('bsub-panel');
                 if (panel) panel.classList.remove('visible');
