@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/FrRay/BiliLens
-    // @version      5.1.0
+    // @version      5.2.0
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -364,7 +364,7 @@
                 apiKey: GM_getValue(AI_CONFIG_KEYS.apiKey, ''),
                 // 兼容旧版本：2.0 已弃用时，自动迁移到当前默认模型。
                 model: savedModel === 'agnes-2.0-flash' ? DEFAULT_MODEL : savedModel,
-                prompt: GM_getValue(AI_CONFIG_KEYS.prompt, DEFAULT_PROMPT),
+                prompt: getActivePromptText(),
                 subtitlePreference: GM_getValue(AI_CONFIG_KEYS.subtitlePreference, 'ai-zh'),
             };
         }
@@ -382,8 +382,119 @@
             return !!(c.apiUrl && c.apiKey && c.model);
         }
 
-        function getPromptTemplateId(prompt) {
-            return Object.entries(PROMPT_TEMPLATES).find(([, template]) => template.prompt === prompt)?.[0] || 'custom';
+        // ---- 提示词库 ----
+        // 一条提示词 = 内置模板（可改写，可恢复默认）或用户自建条目，均可保存多条。
+        const PROMPT_LIBRARY_KEY = 'prompt_library_v1';
+        const PROMPT_CUSTOM_LIMIT = 30;
+        const PROMPT_NAME_MAX = 24;
+        const PROMPT_TEXT_MAX = 4000;
+
+        function createPromptId() {
+            return 'p_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+        }
+
+        function normalizePromptName(value) {
+            const text = typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
+            return text.slice(0, PROMPT_NAME_MAX);
+        }
+
+        function normalizePromptText(value) {
+            return typeof value === 'string' ? value.trim().slice(0, PROMPT_TEXT_MAX) : '';
+        }
+
+        // 按文本反查内置模板，用于旧版本单条提示词的迁移。
+        function getBuiltinPromptId(prompt) {
+            const text = normalizePromptText(prompt);
+            if (!text) return '';
+            return Object.keys(PROMPT_TEMPLATES).find(id => PROMPT_TEMPLATES[id].prompt.trim() === text) || '';
+        }
+
+        function savePromptLibrary(library) {
+            try {
+                GM_setValue(PROMPT_LIBRARY_KEY, library);
+            } catch (error) {
+                console.warn('[BiliLens] 保存提示词库失败:', error);
+            }
+        }
+
+        function getPromptLibrary() {
+            const library = { overrides: {}, custom: [], active: '' };
+            let raw = null;
+            try {
+                raw = GM_getValue(PROMPT_LIBRARY_KEY, null);
+            } catch (error) {
+                console.warn('[BiliLens] 读取提示词库失败:', error);
+            }
+
+            if (raw && typeof raw === 'object') {
+                if (raw.overrides && typeof raw.overrides === 'object') {
+                    Object.keys(PROMPT_TEMPLATES).forEach(id => {
+                        const text = normalizePromptText(raw.overrides[id]);
+                        if (text) library.overrides[id] = text;
+                    });
+                }
+                if (Array.isArray(raw.custom)) {
+                    raw.custom.forEach(item => {
+                        if (!item || typeof item !== 'object') return;
+                        const prompt = normalizePromptText(item.prompt);
+                        if (!prompt) return;
+                        library.custom.push({
+                            id: typeof item.id === 'string' && item.id ? item.id : createPromptId(),
+                            name: normalizePromptName(item.name) || `提示词 ${library.custom.length + 1}`,
+                            prompt,
+                        });
+                    });
+                }
+                if (typeof raw.active === 'string') library.active = raw.active;
+            } else {
+                // 迁移：5.1.0 及更早版本只有一条 ai_prompt。
+                const legacy = normalizePromptText(GM_getValue(AI_CONFIG_KEYS.prompt, DEFAULT_PROMPT));
+                const builtinId = getBuiltinPromptId(legacy);
+                if (builtinId) {
+                    library.active = builtinId;
+                } else if (legacy) {
+                    const item = { id: createPromptId(), name: '我的提示词', prompt: legacy };
+                    library.custom.push(item);
+                    library.active = 'custom:' + item.id;
+                } else {
+                    library.active = 'general';
+                }
+                savePromptLibrary(library);
+            }
+
+            // 选中项被删除或数据损坏时回落到默认模板，避免出现空提示词。
+            if (!resolvePromptEntry(library, library.active)) library.active = 'general';
+            return library;
+        }
+
+        // key 为内置模板 id 或 'custom:<id>'；返回 null 表示该条目已不存在。
+        function resolvePromptEntry(library, key) {
+            if (!key || typeof key !== 'string') return null;
+            if (key.indexOf('custom:') === 0) {
+                const id = key.slice(7);
+                const item = library.custom.find(row => row.id === id);
+                if (!item) return null;
+                return { key, kind: 'custom', id, name: item.name, prompt: item.prompt, adapted: false };
+            }
+            const template = PROMPT_TEMPLATES[key];
+            if (!template) return null;
+            const adapted = Object.prototype.hasOwnProperty.call(library.overrides, key);
+            return {
+                key,
+                kind: 'builtin',
+                id: key,
+                name: template.label,
+                prompt: adapted ? library.overrides[key] : template.prompt,
+                adapted,
+            };
+        }
+
+        // 当前生效的提示词：提示词库选中的条目优先，其次回落到 ai_prompt。
+        function getActivePromptText() {
+            const library = getPromptLibrary();
+            const entry = resolvePromptEntry(library, library.active);
+            if (entry) return entry.prompt;
+            return normalizePromptText(GM_getValue(AI_CONFIG_KEYS.prompt, DEFAULT_PROMPT)) || DEFAULT_PROMPT;
         }
 
         function getCurrentVideoKey() {
@@ -1875,6 +1986,31 @@
                         color: #86868b;
                         overflow-wrap: anywhere;
                     }
+                    .bsub-prompt-tools {
+                        display: flex;
+                        flex-wrap: wrap;
+                        gap: 8px;
+                        margin-top: 8px;
+                    }
+                    .bsub-prompt-tools button {
+                        padding: 6px 10px;
+                        border: 0.5px solid #d2d2d7;
+                        border-radius: 8px;
+                        background: transparent;
+                        color: #007aff;
+                        font-size: 12px;
+                        font-family: inherit;
+                        cursor: pointer;
+                        transition: all 0.15s ease;
+                    }
+                    .bsub-prompt-tools button:hover:not(:disabled) { background: rgba(0, 122, 255, 0.08); }
+                    .bsub-prompt-tools button:disabled { opacity: 0.4; cursor: default; }
+                    #bsub-prompt-delete { color: #ff3b30; }
+                    #bsub-prompt-delete:hover:not(:disabled) { background: rgba(255, 59, 48, 0.1); }
+                    #bsub-prompt-delete.armed {
+                        border-color: rgba(255, 59, 48, 0.45);
+                        background: rgba(255, 59, 48, 0.14);
+                    }
                     .bsub-settings-actions {
                         display: flex;
                         gap: 8px;
@@ -1977,6 +2113,15 @@
                             background: rgba(255, 255, 255, 0.16);
                             color: #64a8ff;
                         }
+                        .bsub-prompt-tools button {
+                            border-color: rgba(255, 255, 255, 0.16);
+                            color: #64a8ff;
+                        }
+                        #bsub-prompt-delete { color: #ff6b62; }
+                        #bsub-prompt-delete.armed {
+                            border-color: rgba(255, 107, 98, 0.5);
+                            background: rgba(255, 107, 98, 0.16);
+                        }
                     }
                 </style>
 
@@ -2075,17 +2220,15 @@
                                 <div class="bsub-field-hint">未找到首选语言时，将自动使用其他可用字幕</div>
                             </div>
                             <div class="bsub-field">
-                                <label class="bsub-field-label">提示词</label>
-                                <select id="bsub-prompt-template">
-                                    <option value="general">通用总结</option>
-                                    <option value="outline">要点提纲</option>
-                                    <option value="study">学习笔记</option>
-                                    <option value="action">行动清单</option>
-                                    <option value="narrative">视频叙事</option>
-                                    <option value="custom">自定义</option>
-                                </select>
-                                <div class="bsub-field-hint">选择模板后可继续编辑下方内容</div>
+                                <label class="bsub-field-label" for="bsub-prompt-template">提示词</label>
+                                <select id="bsub-prompt-template"></select>
+                                <div class="bsub-field-hint">内置模板可改动后保存，也可另存为自己的提示词</div>
                                 <textarea id="bsub-ai-prompt" rows="4" placeholder="输入提示词，字幕内容会自动拼接到末尾"></textarea>
+                                <div class="bsub-prompt-tools">
+                                    <button id="bsub-prompt-save-as" type="button">另存为新的提示词</button>
+                                    <button id="bsub-prompt-reset" type="button">恢复默认</button>
+                                    <button id="bsub-prompt-delete" type="button">删除</button>
+                                </div>
                                 <div class="bsub-field-hint">只填写提示词部分，字幕文本由脚本自动拼接，无需手动插入</div>
                             </div>
                             <div class="bsub-settings-test">
@@ -2107,6 +2250,8 @@
             STATE.uiCreated = true;
             updateUI();
             restoreSummaryFromHistory();
+            // 首次运行就把旧版单条提示词迁移成提示词库，而不是拖到第一次打开设置。
+            getPromptLibrary();
 
             // 入口按钮植入 B 站工具栏（工具栏可能延迟出现，轮询等待）
             const dotPoll = setInterval(() => {
@@ -2433,12 +2578,22 @@
             const templateSelect = document.getElementById('bsub-prompt-template');
             const promptInput = document.getElementById('bsub-ai-prompt');
             templateSelect.addEventListener('change', () => {
-                const template = PROMPT_TEMPLATES[templateSelect.value];
-                if (template) promptInput.value = template.prompt;
+                // 切换前先把当前编辑写回原条目，避免一次切换丢掉改动。
+                commitPromptDraft();
+                const library = getPromptLibrary();
+                const entry = resolvePromptEntry(library, templateSelect.value);
+                library.active = entry ? entry.key : 'general';
+                savePromptLibrary(library);
+                const current = getPromptLibrary();
+                const active = resolvePromptEntry(current, current.active);
+                promptInput.value = active ? active.prompt : DEFAULT_PROMPT;
+                renderPromptSelect(current, current.active);
+                updatePromptToolsState();
             });
-            promptInput.addEventListener('input', () => {
-                templateSelect.value = getPromptTemplateId(promptInput.value);
-            });
+            promptInput.addEventListener('input', updatePromptToolsState);
+            document.getElementById('bsub-prompt-save-as').addEventListener('click', savePromptAsNew);
+            document.getElementById('bsub-prompt-reset').addEventListener('click', resetPromptToDefault);
+            document.getElementById('bsub-prompt-delete').addEventListener('click', deletePromptEntry);
 
             // 逐句字幕视图：切换、跟随开关与点击跳转
             STATE.subtitleFollow = GM_getValue(SUBTITLE_FOLLOW_KEY, true) !== false;
@@ -2507,14 +2662,188 @@
             });
         }
 
+        // ---- 设置面板：提示词库交互 ----
+        let promptDeleteTimer = null;
+
+        function renderPromptSelect(library, selectedKey) {
+            const select = document.getElementById('bsub-prompt-template');
+            if (!select) return;
+            const key = resolvePromptEntry(library, selectedKey) ? selectedKey : 'general';
+            select.textContent = '';
+
+            const builtinGroup = document.createElement('optgroup');
+            builtinGroup.label = '内置模板';
+            Object.entries(PROMPT_TEMPLATES).forEach(([id, template]) => {
+                const option = document.createElement('option');
+                option.value = id;
+                option.textContent = template.label
+                    + (Object.prototype.hasOwnProperty.call(library.overrides, id) ? '（已修改）' : '');
+                builtinGroup.appendChild(option);
+            });
+            select.appendChild(builtinGroup);
+
+            if (library.custom.length) {
+                const customGroup = document.createElement('optgroup');
+                customGroup.label = '我的提示词';
+                library.custom.forEach(item => {
+                    const option = document.createElement('option');
+                    option.value = 'custom:' + item.id;
+                    option.textContent = item.name;
+                    customGroup.appendChild(option);
+                });
+                select.appendChild(customGroup);
+            }
+
+            select.value = key;
+        }
+
+        function disarmPromptDelete() {
+            clearTimeout(promptDeleteTimer);
+            promptDeleteTimer = null;
+            const deleteButton = document.getElementById('bsub-prompt-delete');
+            if (!deleteButton || !deleteButton.classList.contains('armed')) return;
+            deleteButton.classList.remove('armed');
+            deleteButton.textContent = '删除';
+        }
+
+        // 按钮可用性取决于「文本框与条目原文的差异」，编辑后立即生效，不必先保存。
+        function updatePromptToolsState() {
+            const promptInput = document.getElementById('bsub-ai-prompt');
+            const resetButton = document.getElementById('bsub-prompt-reset');
+            const deleteButton = document.getElementById('bsub-prompt-delete');
+            if (!promptInput || !resetButton || !deleteButton) return;
+            const library = getPromptLibrary();
+            const entry = resolvePromptEntry(library, library.active);
+            const isCustom = !!entry && entry.kind === 'custom';
+            const original = !entry ? '' : (entry.kind === 'builtin' ? PROMPT_TEMPLATES[entry.id].prompt : entry.prompt);
+            const differs = !!entry && promptInput.value.trim() !== original.trim();
+            resetButton.disabled = !entry || isCustom || !differs;
+            deleteButton.disabled = !isCustom;
+            if (!isCustom) disarmPromptDelete();
+        }
+
+        // 把文本框内容写回当前选中的条目；未改动时不做任何写入。
+        function commitPromptDraft() {
+            const promptInput = document.getElementById('bsub-ai-prompt');
+            if (!promptInput) return false;
+            const library = getPromptLibrary();
+            const entry = resolvePromptEntry(library, library.active);
+            if (!entry) return false;
+            const text = normalizePromptText(promptInput.value);
+            if (!text || text === entry.prompt) return false;
+
+            if (entry.kind === 'builtin') {
+                // 改回默认内容时自动取消覆盖，避免留下无意义的“已修改”标记。
+                if (text === PROMPT_TEMPLATES[entry.id].prompt.trim()) delete library.overrides[entry.id];
+                else library.overrides[entry.id] = text;
+            } else {
+                const item = library.custom.find(row => row.id === entry.id);
+                if (!item) return false;
+                item.prompt = text;
+            }
+            savePromptLibrary(library);
+            return true;
+        }
+
+        function savePromptAsNew() {
+            const promptInput = document.getElementById('bsub-ai-prompt');
+            if (!promptInput) return;
+            const library = getPromptLibrary();
+            if (library.custom.length >= PROMPT_CUSTOM_LIMIT) {
+                showToast(`最多保存 ${PROMPT_CUSTOM_LIMIT} 条自定义提示词`);
+                return;
+            }
+            const text = normalizePromptText(promptInput.value) || getActivePromptText();
+            if (!text) {
+                showToast('请先填写提示词内容');
+                return;
+            }
+
+            const entry = resolvePromptEntry(library, library.active);
+            let name = null;
+            try {
+                name = window.prompt('为这条提示词起个名字', (entry && entry.name) || '我的提示词');
+            } catch (error) {
+                name = '';
+            }
+            if (name === null) return;
+
+            const item = {
+                id: createPromptId(),
+                name: normalizePromptName(name) || `提示词 ${library.custom.length + 1}`,
+                prompt: text,
+            };
+            library.custom.push(item);
+            library.active = 'custom:' + item.id;
+            savePromptLibrary(library);
+
+            const current = getPromptLibrary();
+            renderPromptSelect(current, current.active);
+            promptInput.value = item.prompt;
+            updatePromptToolsState();
+            showToast(`已保存为「${item.name}」`);
+        }
+
+        function resetPromptToDefault() {
+            const promptInput = document.getElementById('bsub-ai-prompt');
+            const library = getPromptLibrary();
+            const entry = resolvePromptEntry(library, library.active);
+            if (!promptInput || !entry || entry.kind !== 'builtin') return;
+
+            delete library.overrides[entry.id];
+            savePromptLibrary(library);
+            const defaultText = PROMPT_TEMPLATES[entry.id].prompt;
+            GM_setValue(AI_CONFIG_KEYS.prompt, defaultText);
+
+            const current = getPromptLibrary();
+            promptInput.value = defaultText;
+            renderPromptSelect(current, current.active);
+            updatePromptToolsState();
+            showToast(`已恢复「${entry.name}」的默认内容`);
+        }
+
+        function deletePromptEntry() {
+            const deleteButton = document.getElementById('bsub-prompt-delete');
+            const promptInput = document.getElementById('bsub-ai-prompt');
+            const library = getPromptLibrary();
+            const entry = resolvePromptEntry(library, library.active);
+            if (!deleteButton || !promptInput || !entry || entry.kind !== 'custom') return;
+
+            // 二次确认：3 秒内未再次点击则自动取消。
+            if (!deleteButton.classList.contains('armed')) {
+                deleteButton.classList.add('armed');
+                deleteButton.textContent = '确认删除？';
+                clearTimeout(promptDeleteTimer);
+                promptDeleteTimer = setTimeout(disarmPromptDelete, 3000);
+                return;
+            }
+
+            disarmPromptDelete();
+            library.custom = library.custom.filter(row => row.id !== entry.id);
+            library.active = 'general';
+            savePromptLibrary(library);
+
+            const current = getPromptLibrary();
+            const next = resolvePromptEntry(current, current.active);
+            const text = next ? next.prompt : DEFAULT_PROMPT;
+            GM_setValue(AI_CONFIG_KEYS.prompt, text);
+            promptInput.value = text;
+            renderPromptSelect(current, current.active);
+            updatePromptToolsState();
+            showToast(`已删除「${entry.name}」`);
+        }
+
         function openSettings() {
             const c = getAIConfig();
             document.getElementById('bsub-ai-url').value = c.apiUrl;
             document.getElementById('bsub-ai-key').value = c.apiKey;
             document.getElementById('bsub-ai-model').value = c.model;
             document.getElementById('bsub-subtitle-preference').value = SUBTITLE_PREFERENCES[c.subtitlePreference] ? c.subtitlePreference : 'ai-zh';
-            document.getElementById('bsub-ai-prompt').value = c.prompt || DEFAULT_PROMPT;
-            document.getElementById('bsub-prompt-template').value = getPromptTemplateId(c.prompt || DEFAULT_PROMPT);
+            const library = getPromptLibrary();
+            const promptEntry = resolvePromptEntry(library, library.active);
+            document.getElementById('bsub-ai-prompt').value = promptEntry ? promptEntry.prompt : (c.prompt || DEFAULT_PROMPT);
+            renderPromptSelect(library, library.active);
+            updatePromptToolsState();
             const testResult = document.getElementById('bsub-settings-test-result');
             if (testResult) {
                 testResult.textContent = '';
@@ -2578,11 +2907,13 @@
 
         function saveSettings() {
             const apiUrl = normalizeApiUrl(document.getElementById('bsub-ai-url').value);
+            // 先落盘提示词改动：内置模板的改写也会一并留存。
+            commitPromptDraft();
             saveAIConfig({
                 apiUrl,
                 apiKey: document.getElementById('bsub-ai-key').value.trim(),
                 model: document.getElementById('bsub-ai-model').value.trim(),
-                prompt: document.getElementById('bsub-ai-prompt').value.trim() || DEFAULT_PROMPT,
+                prompt: getActivePromptText() || DEFAULT_PROMPT,
                 subtitlePreference: document.getElementById('bsub-subtitle-preference').value,
             });
             document.getElementById('bsub-ai-url').value = apiUrl;
