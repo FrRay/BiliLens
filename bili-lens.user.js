@@ -1,7 +1,7 @@
     // ==UserScript==
     // @name         BiliLens
     // @namespace    https://github.com/FrRay/BiliLens
-    // @version      5.2.0
+    // @version      5.2.1
     // @description  为 B 站视频提供 AI 辅助的摘要生成功能：自动获取字幕，并通过兼容 OpenAI 接口的模型流式输出视频总结。
     // @author       FrRay
     // @match        https://www.bilibili.com/video/*
@@ -871,6 +871,55 @@
                 throw new Error(apiErrorMessage(response.status, serverMessage));
             }
             return readAIResponse(response, onProgress);
+        }
+
+        // 字幕还没拦截到时的统一入口：自动展开字幕菜单、等待拦截，成功后接着生成总结。
+        // 「恢复本地总结」「切换视频后重新生成」都走这里，否则只会得到一句“没有字幕数据”。
+        function captureSubtitlesThenSummarize() {
+            if (STATE.isGenerating || STATE.isFetchingSubtitle) return true;
+
+            const panel = document.getElementById('bsub-panel');
+            if (panel) showSummaryPanel(panel);
+            STATE.isFetchingSubtitle = true;
+            STATE.subtitleFetchFailed = false;
+            updateUI();
+
+            installSubtitleRequestHooks();
+            const opened = autoOpenSubtitle();
+            if (!opened) {
+                removeSubtitleRequestHooks?.();
+                STATE.isFetchingSubtitle = false;
+                STATE.subtitleFetchFailed = true;
+                updateUI();
+                showToast('没能打开字幕菜单，请确认该视频提供字幕');
+                return false;
+            }
+
+            // 延续「触发字幕请求 → Hook 收到 JSON」的流程。
+            const waitPoll = setInterval(() => {
+                if (STATE.interceptedSubtitles.length > 0) {
+                    clearInterval(waitPoll);
+                    STATE.activePolls.delete(waitPoll);
+                    clearTimeout(STATE.subtitleWaitTimeout);
+                    STATE.subtitleWaitTimeout = null;
+                    STATE.isFetchingSubtitle = false;
+                    updateUI();
+                    generateAISummary();
+                }
+            }, 500);
+            STATE.activePolls.add(waitPoll);
+            STATE.subtitleWaitTimeout = setTimeout(() => {
+                clearInterval(waitPoll);
+                STATE.activePolls.delete(waitPoll);
+                STATE.subtitleWaitTimeout = null;
+                removeSubtitleRequestHooks?.();
+                finishSubtitleHover();
+                STATE.isFetchingSubtitle = false;
+                STATE.subtitleFetchFailed = true;
+                updateUI();
+                showToast('获取字幕超时，请确认该视频提供字幕');
+            }, 15000);
+            return true;
         }
 
         async function generateAISummary() {
@@ -2447,45 +2496,7 @@
                 }
                 // 无字幕 → 自动获取后开始总结
                 if (STATE.interceptedSubtitles.length === 0) {
-                    if (STATE.isFetchingSubtitle) return;
-                    STATE.isFetchingSubtitle = true;
-                    STATE.subtitleFetchFailed = false;
-                    showSummaryPanel(panel);
-                    content.textContent = '';
-                    updateUI();
-
-                    installSubtitleRequestHooks();
-                    const opened = autoOpenSubtitle();
-                    if (!opened) {
-                        removeSubtitleRequestHooks?.();
-                        STATE.isFetchingSubtitle = false;
-                        STATE.subtitleFetchFailed = true;
-                        updateUI();
-                        return;
-                    }
-                    // 延续原有的“触发字幕请求 → Hook 收到 JSON”流程。
-                    const waitPoll = setInterval(() => {
-                        if (STATE.interceptedSubtitles.length > 0) {
-                            clearInterval(waitPoll);
-                            STATE.activePolls.delete(waitPoll);
-                            clearTimeout(STATE.subtitleWaitTimeout);
-                            STATE.subtitleWaitTimeout = null;
-                            STATE.isFetchingSubtitle = false;
-                            updateUI();
-                            generateAISummary();
-                        }
-                    }, 500);
-                    STATE.activePolls.add(waitPoll);
-                    STATE.subtitleWaitTimeout = setTimeout(() => {
-                        clearInterval(waitPoll);
-                        STATE.activePolls.delete(waitPoll);
-                        STATE.subtitleWaitTimeout = null;
-                        removeSubtitleRequestHooks?.();
-                        finishSubtitleHover();
-                        STATE.isFetchingSubtitle = false;
-                        STATE.subtitleFetchFailed = true;
-                        updateUI();
-                    }, 15000);
+                    captureSubtitlesThenSummarize();
                     return;
                 }
                 // 有字幕 → 直接总结
@@ -2499,11 +2510,11 @@
                 document.getElementById('bsub-panel').classList.remove('visible');
             });
 
-            // 重新生成
+            // 重新生成：字幕还没拦截到时先补一次获取，从本地历史恢复的总结也能直接重生成
             document.getElementById('bsub-refresh').addEventListener('click', () => {
                 if (STATE.isGenerating) return;
                 if (STATE.interceptedSubtitles.length === 0) {
-                    showToast('没有字幕数据');
+                    captureSubtitlesThenSummarize();
                     return;
                 }
                 generateAISummary();
@@ -2966,7 +2977,7 @@
                     statusText.textContent = '点击图标开始';
                     statusText.style.color = '#86868b';
                 }
-            } else if (STATE.lastSummaryMd) {
+            } else if (STATE.lastSummaryMd && !STATE.subtitleFetchFailed) {
                 dot.className = baseClass + ' active';
                 dot.title = '查看已保存的总结';
                 lineCountEl.textContent = '已保存';

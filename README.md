@@ -8,7 +8,7 @@
     <a href="#常见问题">常见问题</a>
   </p>
 
-  <img alt="Version" src="https://img.shields.io/badge/version-5.2.0-00AEEC?style=flat-square">
+  <img alt="Version" src="https://img.shields.io/badge/version-5.2.1-00AEEC?style=flat-square">
   <img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-7C3AED?style=flat-square">
   <img alt="Platform" src="https://img.shields.io/badge/platform-Bilibili-FB7299?style=flat-square">
 
@@ -36,6 +36,10 @@ BiliLens 是面向 B 站播放页的用户脚本，为具有可用字幕的视�
 
 > [!NOTE]
 > 字幕是生成总结的基础。视频未提供可用字幕时，面板将显示“获取字幕 0 行”。
+
+## 5.2.1 更新公告
+
+【修复】从本地历史恢复的总结，点击「重新生成」时提示没有字幕、只能先删掉历史条目才能继续的问题
 
 ## 5.2.0 更新公告
 
